@@ -16,6 +16,25 @@ CHANNEL_IDS = [
     "UCiMASbpDUjNvy5CJAmfekOw",
     "UCLIryeFjYeiEtpqNETz_Ydg",
     "UCAJcxMaiGu-cjzklR-63ojw",
+    "UCuFjc50BSjqeW7AOVmSR7dQ",
+    "UCL0cLclH8j_qGjQhnn_5skg",
+    "UC31Y8qVbsrRMUt1hbIfvCaw",
+    "UC5zCR2OSUvo1g49rkAL8PoQ",
+
+
+    #mandirs
+    "UCBAvMHZO3BIfMMhOK9LMOYQ",
+    "UC82-0zBQho_hyV10fFAAeQA",
+    "UCpSTRmTFY7pCzdeHJwAiAEg",
+    "UC1OSbPhj52oW6VM6Odq4uzA",
+    "UCT1egsvA08YcdMLiEu1DTRg",
+    "UC1qqv4R3RhT5OVMy-E_PciQ",
+    "UCJKGP1t3yZMrh1Yc4Afs5rQ",
+    "UC7Uo3euG3IA0yBlQyIXDcUA",
+    "UCsCY7yimnS3FCIo-SCXD-Zg",
+    "UCmX4QOJHAu2vni7nuGmNT5A",
+    "UCxghhy9WjHpiO2jixD3t6WQ",
+    "UCT3k8uyu8K8r6155o-9shdg",
 ]
 
 # 🚫 Keywords to exclude (Case Insensitive, Whole Words Only)
