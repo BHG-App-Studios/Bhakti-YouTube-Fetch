@@ -14,6 +14,7 @@ import re
 # Add your Bhakti channel IDs here
 CHANNEL_IDS = [
     "UCiMASbpDUjNvy5CJAmfekOw",
+    "UCLIryeFjYeiEtpqNETz_Ydg",
 ]
 
 # 🚫 Keywords to exclude (Case Insensitive, Whole Words Only)
