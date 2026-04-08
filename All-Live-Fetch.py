@@ -134,6 +134,7 @@ if doc_exists:
         existing_video_map = vid_field
 
 existing_ids_bhakti = set(existing_video_map.keys())
+existing_titles_bhakti = set(existing_video_map.values())
 
 # Auto-migrate immediately so subsequent updates don't fail
 if is_migration_needed:
@@ -166,6 +167,9 @@ if existing_ids_bhakti:
             
             existing_ids_bhakti.remove(vid)
             if vid in existing_video_map:
+                title = existing_video_map[vid]
+                if title in existing_titles_bhakti:
+                    existing_titles_bhakti.remove(title)
                 del existing_video_map[vid]
                 
             # Add to map field deletion updates using dot notation
@@ -186,7 +190,8 @@ if existing_ids_bhakti:
 
 # ---------------- COUNTERS ----------------
 total_fetched = 0
-total_skipped_existing = 0
+total_skipped_existing_id = 0
+total_skipped_existing_title = 0
 total_skipped_not_live = 0
 total_skipped_keywords = 0
 total_skipped_duplicate_titles = 0
@@ -235,13 +240,23 @@ for channel_id in CHANNEL_IDS:
     total_fetched += len(videos)
     rss_videos.extend(videos)
 
-# 2. Filter out Existing IDs 
+# 2. Filter out Existing IDs AND Titles
 candidates = []
 for v in rss_videos:
     vid = v["video_id"]
+    title = v["title"]
+    
+    # Check ID match
     if vid in existing_ids_bhakti:
-        total_skipped_existing += 1
+        total_skipped_existing_id += 1
         continue
+        
+    # Check Title match
+    if title in existing_titles_bhakti:
+        total_skipped_existing_title += 1
+        print(f"👯 Skipped (Title already in DB): {title[:40]}...")
+        continue
+        
     if any(c["video_id"] == vid for c in candidates):
         continue
     candidates.append(v)
@@ -266,13 +281,13 @@ if not live_candidates:
     print("✅ No new active live streams found right now.")
     sys.exit(0)
 
-# 3.5 Deduplicate by EXACT title match before inserting
+# 3.5 Deduplicate by EXACT title match before inserting (for duplicates within the exact same fetch run)
 unique_live_candidates = []
 seen_titles = set()
 
 for v in live_candidates:
     if v["title"] in seen_titles:
-        print(f"👯 Skipped Duplicate Title: {v['title'][:40]}...")
+        print(f"👯 Skipped Duplicate Title in Fetch: {v['title'][:40]}...")
         total_skipped_duplicate_titles += 1
     else:
         seen_titles.add(v["title"])
@@ -315,6 +330,7 @@ for v in live_candidates:
     db_bhakti.collection(COLLECTION_NAME).document().set(doc_data)
     
     existing_ids_bhakti.add(vid)
+    existing_titles_bhakti.add(title)
     existing_video_map[vid] = title
     new_ids_bhakti.append(vid)
     
@@ -347,11 +363,12 @@ if new_video_updates:
 
 # ---------------- SUMMARY ----------------
 print("\n================ SUMMARY ================")
-print(f"🗑️  Stale Streams Deleted   : {total_deleted_bhakti}")
-print(f"📥 Total RSS Fetched        : {total_fetched}")
-print(f"⏭️  Skipped (Already in DB) : {total_skipped_existing}")
-print(f"🗑️  Skipped (Normal Videos) : {total_skipped_not_live}")
-print(f"🛑 Skipped (Keywords)       : {total_skipped_keywords}")
-print(f"👯 Skipped (Duplicate Title): {total_skipped_duplicate_titles}")
-print(f"➕ Inserted to Bhakti      : {total_inserted_bhakti} (Total Live: {len(existing_ids_bhakti)})")
+print(f"🗑️  Stale Streams Deleted      : {total_deleted_bhakti}")
+print(f"📥 Total RSS Fetched           : {total_fetched}")
+print(f"⏭️  Skipped (ID Already in DB) : {total_skipped_existing_id}")
+print(f"⏭️  Skipped (Title already in DB): {total_skipped_existing_title}")
+print(f"🗑️  Skipped (Normal Videos)    : {total_skipped_not_live}")
+print(f"🛑 Skipped (Keywords)          : {total_skipped_keywords}")
+print(f"👯 Skipped (Duplicate Title)   : {total_skipped_duplicate_titles}")
+print(f"➕ Inserted to Bhakti         : {total_inserted_bhakti} (Total Live: {len(existing_ids_bhakti)})")
 print("========================================")
