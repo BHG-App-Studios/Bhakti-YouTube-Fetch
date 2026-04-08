@@ -12,12 +12,10 @@ import re
 
 # ---------------- CONFIG ----------------
 CHANNEL_IDS = [
-  
     "UCcGjF-pB4bV5vgaqahJ1qpg",
     "UCaayLD9i5x4MmIoVZxXSv_g",
     "UC6vQRTCxutg6fJLUGkDKynQ",
     "UCaF3MVnBYNnjAKF16k3mUjw",
-  
 ]
 
 # 🚫 Keywords to exclude (Case Insensitive, Whole Words Only)
@@ -123,6 +121,18 @@ def chunk_list(data, chunk_size):
     """Yield successive chunks from list."""
     for i in range(0, len(data), chunk_size):
         yield data[i:i + chunk_size]
+
+# ---------------- HELPER: IMAGE URL CHECK ----------------
+def get_working_image_url(video_id):
+    maxres_url = f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
+    fallback_url = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+    try:
+        response = requests.head(maxres_url, timeout=5)
+        if response.status_code == 200:
+            return maxres_url
+    except Exception:
+        pass
+    return fallback_url
 
 # ---------------- API HELPER: CHECK LIVE STATUS ----------------
 def get_live_status_batch(video_ids):
@@ -268,12 +278,15 @@ for v in vod_candidates:
         total_skipped_short += 1
         continue
 
+    # --- CHECK IMAGE VALIDITY ---
+    final_image_url = get_working_image_url(vid)
+
     # --- INSERT ---
     # FIXED: Using v["published"] instead of time.time()
     db.collection(COLLECTION_NAME).document().set({
         "title": v["title"],
         "url": v["url"],
-        "imageUrl": v["imageUrl"],
+        "imageUrl": final_image_url,
         "timestamp": str(int(time.time() * 1000)),
     })
 
