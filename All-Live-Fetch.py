@@ -21,7 +21,6 @@ CHANNEL_IDS = [
     "UC31Y8qVbsrRMUt1hbIfvCaw",
     "UC5zCR2OSUvo1g49rkAL8PoQ",
 
-
     #mandirs
     "UCBAvMHZO3BIfMMhOK9LMOYQ",
     "UC82-0zBQho_hyV10fFAAeQA",
@@ -118,7 +117,31 @@ def get_working_image_url(video_id):
 print(f"\n📖 Fetching existing Video IDs from {COLLECTION_NAME}...")
 
 doc_bhakti = db_bhakti.collection(COLLECTION_NAME).document(ALL_IDS_DOC).get()
-existing_ids_bhakti = set(doc_bhakti.to_dict().get("video_id", [])) if doc_bhakti.exists else set()
+existing_video_map = {}
+is_migration_needed = False
+doc_exists = doc_bhakti.exists
+
+if doc_exists:
+    doc_data = doc_bhakti.to_dict()
+    vid_field = doc_data.get("video_id", {})
+    
+    # Backward compatibility: if the existing field is an array, migrate it to a map
+    if isinstance(vid_field, list):
+        print("🔄 Detected old Array format. Migrating to Map format...")
+        existing_video_map = {vid: "Unknown Title" for vid in vid_field}
+        is_migration_needed = True
+    elif isinstance(vid_field, dict):
+        existing_video_map = vid_field
+
+existing_ids_bhakti = set(existing_video_map.keys())
+
+# Auto-migrate immediately so subsequent updates don't fail
+if is_migration_needed:
+    db_bhakti.collection(COLLECTION_NAME).document(ALL_IDS_DOC).set({
+        "video_id": existing_video_map,
+        "total_count": len(existing_video_map)
+    })
+    print("✅ Migration to Map format complete.")
 
 print(f"📦 Existing in Bhakti App: {len(existing_ids_bhakti)}")
 
@@ -133,23 +156,31 @@ if existing_ids_bhakti:
     if stale_ids:
         print(f"🗑️ Found {len(stale_ids)} streams no longer live. Cleaning up...")
         
+        # Use DELETE_FIELD and Increment to update safely
+        updates = {
+            "total_count": firestore.Increment(-len(stale_ids))
+        }
+        
         for vid in stale_ids:
             target_url = f"https://www.youtube.com/watch?v={vid}"
             
             existing_ids_bhakti.remove(vid)
+            if vid in existing_video_map:
+                del existing_video_map[vid]
+                
+            # Add to map field deletion updates using dot notation
+            updates[f"video_id.{vid}"] = firestore.DELETE_FIELD
+            
             # Find and delete document by matching the url
             docs = db_bhakti.collection(COLLECTION_NAME).where("url", "==", target_url).stream()
             for doc in docs:
                 doc.reference.delete()
             total_deleted_bhakti += 1
 
-        # Update ALL_IDS_DOC array and count after deletions
+        # Update ALL_IDS_DOC after deletions
         if total_deleted_bhakti > 0:
-            db_bhakti.collection(COLLECTION_NAME).document(ALL_IDS_DOC).set({
-                "video_id": list(existing_ids_bhakti),
-                "total_count": len(existing_ids_bhakti)
-            }, merge=True)
-            print(f"✅ Updated Bhakti {ALL_IDS_DOC} (Removed {total_deleted_bhakti} stale streams)")
+            db_bhakti.collection(COLLECTION_NAME).document(ALL_IDS_DOC).update(updates)
+            print(f"✅ Updated Bhakti {ALL_IDS_DOC} (Safely Removed {total_deleted_bhakti} stale streams from map)")
     else:
         print("✅ All previously saved streams are still actively live.")
 
@@ -161,6 +192,7 @@ total_skipped_keywords = 0
 total_skipped_duplicate_titles = 0
 total_inserted_bhakti = 0
 new_ids_bhakti = []
+new_video_updates = {} # To hold additions for map updates
 
 # ---------------- RSS FETCH ----------------
 def fetch_videos_from_channel(channel_id):
@@ -281,20 +313,37 @@ for v in live_candidates:
 
     # Insert into Bhakti App DB
     db_bhakti.collection(COLLECTION_NAME).document().set(doc_data)
+    
     existing_ids_bhakti.add(vid)
+    existing_video_map[vid] = title
     new_ids_bhakti.append(vid)
+    
+    # Add new entry into the map update dictionary
+    new_video_updates[f"video_id.{vid}"] = title
+    
     total_inserted_bhakti += 1
     
     print(f"➕ Inserted LIVE STREAM: {vid} - {title[:30]}...")
     time.sleep(0.03)
 
 # ---------------- UPDATE ID INDEX ----------------
-if new_ids_bhakti:
-    print(f"\n💾 Updating {ALL_IDS_DOC} index for Bhakti App...")
-    db_bhakti.collection(COLLECTION_NAME).document(ALL_IDS_DOC).set({
-        "video_id": list(existing_ids_bhakti),
-        "total_count": len(existing_ids_bhakti)
-    }, merge=True)
+if new_video_updates:
+    print(f"\n💾 Safely Updating {ALL_IDS_DOC} Map index for Bhakti App...")
+    
+    # Safely increase total count by amount inserted
+    new_video_updates["total_count"] = firestore.Increment(total_inserted_bhakti)
+    
+    doc_ref = db_bhakti.collection(COLLECTION_NAME).document(ALL_IDS_DOC)
+    
+    if doc_exists:
+        # Securely append map fields
+        doc_ref.update(new_video_updates)
+    else:
+        # If document didn't exist at all yet, initialize it
+        doc_ref.set({
+            "video_id": {vid: existing_video_map[vid] for vid in new_ids_bhakti},
+            "total_count": total_inserted_bhakti
+        })
 
 # ---------------- SUMMARY ----------------
 print("\n================ SUMMARY ================")
