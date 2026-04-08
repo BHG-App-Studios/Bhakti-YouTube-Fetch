@@ -26,11 +26,11 @@ COLLECTION_NAME = "liveStreams"
 ALL_IDS_DOC = "-All_Live_Videos_Id"  
 
 # Env variables for Bhakti App
-SERVICE_ACCOUNT_BHAKTI = os.environ.get("FIREBASE_SERVICE_ACCOUNT_BHAKTI")
+SERVICE_ACCOUNT_BHAKTI = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY")
 
 if not SERVICE_ACCOUNT_BHAKTI:
-    print("❌ FIREBASE_SERVICE_ACCOUNT_BHAKTI env var missing")
+    print("❌ FIREBASE_SERVICE_ACCOUNT env var missing")
     sys.exit(1)
 
 if not YOUTUBE_API_KEY:
