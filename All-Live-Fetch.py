@@ -15,6 +15,7 @@ import re
 CHANNEL_IDS = [
     "UCiMASbpDUjNvy5CJAmfekOw",
     "UCLIryeFjYeiEtpqNETz_Ydg",
+    "UCAJcxMaiGu-cjzklR-63ojw",
 ]
 
 # 🚫 Keywords to exclude (Case Insensitive, Whole Words Only)
