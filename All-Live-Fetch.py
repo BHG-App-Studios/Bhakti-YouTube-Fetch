@@ -74,6 +74,10 @@ def chunk_list(data, chunk_size):
     for i in range(0, len(data), chunk_size):
         yield data[i:i + chunk_size]
 
+def normalize_title(title):
+    """Removes extra spaces and makes lowercase for strict matching"""
+    return " ".join(title.split()).lower()
+
 def get_ONLY_live_streams_batch(video_ids):
     active_live_ids = set()
     CHUNK_SIZE = 50 
@@ -134,7 +138,9 @@ if doc_exists:
         existing_video_map = vid_field
 
 existing_ids_bhakti = set(existing_video_map.keys())
-existing_titles_bhakti = set(existing_video_map.values())
+
+# Create a set of normalized titles to prevent whitespace/case issues
+existing_titles_bhakti = {normalize_title(t) for t in existing_video_map.values()}
 
 # Auto-migrate immediately so subsequent updates don't fail
 if is_migration_needed:
@@ -146,36 +152,60 @@ if is_migration_needed:
 
 print(f"📦 Existing in Bhakti App: {len(existing_ids_bhakti)}")
 
-# ---------------- CLEANUP STALE LIVE STREAMS ----------------
+# ---------------- CLEANUP STALE & DUPLICATE LIVE STREAMS ----------------
 total_deleted_bhakti = 0
+total_deleted_duplicates = 0
 
 if existing_ids_bhakti:
     print(f"\n🔄 Checking {len(existing_ids_bhakti)} previously saved live streams...")
     still_live_ids = get_ONLY_live_streams_batch(list(existing_ids_bhakti))
+    
+    # 1. Find streams that are no longer live
     stale_ids = existing_ids_bhakti - still_live_ids
+    
+    # 2. Find streams that are ALREADY duplicates in the database map
+    seen_existing_titles = set()
+    duplicate_ids_in_db = set()
+    
+    for vid, title in existing_video_map.items():
+        if vid in stale_ids:
+            continue # Skip if it's already marked as stale
+            
+        norm_t = normalize_title(title)
+        if norm_t in seen_existing_titles and title != "Unknown Title":
+            duplicate_ids_in_db.add(vid)
+            total_deleted_duplicates += 1
+            print(f"🧹 Found DUPLICATE title already in DB to clean up: {title[:40]}...")
+        else:
+            seen_existing_titles.add(norm_t)
 
-    if stale_ids:
-        print(f"🗑️ Found {len(stale_ids)} streams no longer live. Cleaning up...")
+    # Combine both stale streams and duplicate streams for deletion
+    ids_to_remove = stale_ids.union(duplicate_ids_in_db)
+
+    if ids_to_remove:
+        print(f"🗑️ Removing {len(stale_ids)} stale streams and {len(duplicate_ids_in_db)} database duplicates...")
         
         # Use DELETE_FIELD and Increment to update safely
         updates = {
-            "total_count": firestore.Increment(-len(stale_ids))
+            "total_count": firestore.Increment(-len(ids_to_remove))
         }
         
-        for vid in stale_ids:
+        for vid in ids_to_remove:
             target_url = f"https://www.youtube.com/watch?v={vid}"
             
             existing_ids_bhakti.remove(vid)
             if vid in existing_video_map:
                 title = existing_video_map[vid]
-                if title in existing_titles_bhakti:
-                    existing_titles_bhakti.remove(title)
+                norm_t = normalize_title(title)
+                if norm_t in existing_titles_bhakti:
+                    # Only remove from the title set if we are deleting the last instance of it
+                    existing_titles_bhakti.remove(norm_t) 
                 del existing_video_map[vid]
                 
             # Add to map field deletion updates using dot notation
             updates[f"video_id.{vid}"] = firestore.DELETE_FIELD
             
-            # Find and delete document by matching the url
+            # Find and delete document by matching the url in the collection
             docs = db_bhakti.collection(COLLECTION_NAME).where("url", "==", target_url).stream()
             for doc in docs:
                 doc.reference.delete()
@@ -184,9 +214,12 @@ if existing_ids_bhakti:
         # Update ALL_IDS_DOC after deletions
         if total_deleted_bhakti > 0:
             db_bhakti.collection(COLLECTION_NAME).document(ALL_IDS_DOC).update(updates)
-            print(f"✅ Updated Bhakti {ALL_IDS_DOC} (Safely Removed {total_deleted_bhakti} stale streams from map)")
+            print(f"✅ Updated Bhakti {ALL_IDS_DOC} (Safely Removed {total_deleted_bhakti} streams from map)")
+            
+            # Rebuild existing titles set after deletion to ensure accuracy
+            existing_titles_bhakti = {normalize_title(t) for t in existing_video_map.values()}
     else:
-        print("✅ All previously saved streams are still actively live.")
+        print("✅ All previously saved streams are actively live and unique.")
 
 # ---------------- COUNTERS ----------------
 total_fetched = 0
@@ -245,20 +278,23 @@ candidates = []
 for v in rss_videos:
     vid = v["video_id"]
     title = v["title"]
+    norm_title = normalize_title(title)
     
     # Check ID match
     if vid in existing_ids_bhakti:
         total_skipped_existing_id += 1
         continue
         
-    # Check Title match
-    if title in existing_titles_bhakti:
+    # Check Title match against the database
+    if norm_title in existing_titles_bhakti:
         total_skipped_existing_title += 1
         print(f"👯 Skipped (Title already in DB): {title[:40]}...")
         continue
         
-    if any(c["video_id"] == vid for c in candidates):
+    # Check Title match against other videos already added to candidates in this same run
+    if any(normalize_title(c["title"]) == norm_title for c in candidates):
         continue
+        
     candidates.append(v)
 
 print(f"\n📝 Candidates needing processing (missing in DB): {len(candidates)}")
@@ -281,16 +317,17 @@ if not live_candidates:
     print("✅ No new active live streams found right now.")
     sys.exit(0)
 
-# 3.5 Deduplicate by EXACT title match before inserting (for duplicates within the exact same fetch run)
+# 3.5 Deduplicate by EXACT title match before inserting (Extra safety net)
 unique_live_candidates = []
 seen_titles = set()
 
 for v in live_candidates:
-    if v["title"] in seen_titles:
+    norm_title = normalize_title(v["title"])
+    if norm_title in seen_titles:
         print(f"👯 Skipped Duplicate Title in Fetch: {v['title'][:40]}...")
         total_skipped_duplicate_titles += 1
     else:
-        seen_titles.add(v["title"])
+        seen_titles.add(norm_title)
         unique_live_candidates.append(v)
 
 live_candidates = unique_live_candidates
@@ -330,7 +367,7 @@ for v in live_candidates:
     db_bhakti.collection(COLLECTION_NAME).document().set(doc_data)
     
     existing_ids_bhakti.add(vid)
-    existing_titles_bhakti.add(title)
+    existing_titles_bhakti.add(normalize_title(title))
     existing_video_map[vid] = title
     new_ids_bhakti.append(vid)
     
@@ -363,7 +400,7 @@ if new_video_updates:
 
 # ---------------- SUMMARY ----------------
 print("\n================ SUMMARY ================")
-print(f"🗑️  Stale Streams Deleted      : {total_deleted_bhakti}")
+print(f"🗑️  Total Streams Deleted      : {total_deleted_bhakti} (Stale: {total_deleted_bhakti - total_deleted_duplicates}, Duplicates Cleaned: {total_deleted_duplicates})")
 print(f"📥 Total RSS Fetched           : {total_fetched}")
 print(f"⏭️  Skipped (ID Already in DB) : {total_skipped_existing_id}")
 print(f"⏭️  Skipped (Title already in DB): {total_skipped_existing_title}")
