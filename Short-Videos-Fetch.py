@@ -230,6 +230,18 @@ def chunk_list(data, chunk_size):
         yield data[i:i + chunk_size]
 
 
+# ---------------- HELPER: IMAGE URL CHECK ----------------
+def get_working_image_url(video_id):
+    maxres_url = f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
+    fallback_url = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+    try:
+        response = requests.head(maxres_url, timeout=5)
+        if response.status_code == 200:
+            return maxres_url
+    except Exception:
+        pass
+    return fallback_url
+
 
 # ---------------- API HELPER: CHECK LIVE STATUS ----------------
 
@@ -501,11 +513,14 @@ for v in vod_candidates:
         total_skipped_short += 1
         continue
 
+    # --- CHECK IMAGE VALIDITY ---
+    final_image_url = get_working_image_url(vid)
+
     # Insert to Firebase
     db.collection(COLLECTION_NAME).document().set({
         "title": v["title"],
         "url": v["url"],
-        "imageUrl": v["imageUrl"],
+        "imageUrl": final_image_url,
         "timestamp": int(v["published"].timestamp() * 1000),
         "video_id": vid,
 
