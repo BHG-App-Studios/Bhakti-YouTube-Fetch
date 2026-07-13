@@ -44,7 +44,7 @@ EXCLUDED_KEYWORDS = [
 ]
 
 # Database Configurations (Updated to target live streams)
-COLLECTION_NAME = "liveStreams_More"
+COLLECTION_NAME = "liveStreams"
 ALL_IDS_DOC = "-All_Live_Videos_Id"  
 
 # Env variables for single service account
