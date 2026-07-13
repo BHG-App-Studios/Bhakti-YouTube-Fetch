@@ -4,6 +4,8 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 import firebase_admin
 from firebase_admin import credentials, firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
+from bs4 import BeautifulSoup
 import json
 import os
 import sys
@@ -11,9 +13,8 @@ import time
 import re
 
 # ---------------- CONFIG ----------------
-# Add your Bhakti channel IDs here
 CHANNEL_IDS = [
-    "UCiMASbpDUjNvy5CJAmfekOw",
+     "UCiMASbpDUjNvy5CJAmfekOw",
     "UCLIryeFjYeiEtpqNETz_Ydg",
     "UCAJcxMaiGu-cjzklR-63ojw",
     "UCuFjc50BSjqeW7AOVmSR7dQ",
@@ -37,19 +38,20 @@ CHANNEL_IDS = [
 ]
 
 # 🚫 Keywords to exclude (Case Insensitive, Whole Words Only)
+# Kept exactly as your previous script per your instructions
 EXCLUDED_KEYWORDS = [
-    "antim ardaas", "bhog", "bhogg",
+     "antim ardaas", "bhog", "bhogg",
 ]
 
-# Database Configurations
+# Database Configurations (Updated to target live streams)
 COLLECTION_NAME = "liveStreams"
 ALL_IDS_DOC = "-All_Live_Videos_Id"  
 
-# Env variables for Bhakti App
-SERVICE_ACCOUNT_BHAKTI = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
+# Env variables for single service account
+SERVICE_ACCOUNT = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY")
 
-if not SERVICE_ACCOUNT_BHAKTI:
+if not SERVICE_ACCOUNT:
     print("❌ FIREBASE_SERVICE_ACCOUNT env var missing")
     sys.exit(1)
 
@@ -62,30 +64,47 @@ NS = {
     "yt": "http://www.youtube.com/xml/schemas/2015"
 }
 
-# ---------------- FIREBASE INIT ----------------
+# ---------------- FIREBASE SINGLE INIT ----------------
 print("🔌 Initializing Firebase Connection for Bhakti App...")
 
-cred_bhakti = credentials.Certificate(json.loads(SERVICE_ACCOUNT_BHAKTI))
-app_bhakti = firebase_admin.initialize_app(cred_bhakti, name='bhakti_app')
-db_bhakti = firestore.client(app=app_bhakti)
+cred = credentials.Certificate(json.loads(SERVICE_ACCOUNT))
+app_bhakti = firebase_admin.initialize_app(cred, name='bhakti_app')
+db = firestore.client(app=app_bhakti)
 
 # ---------------- HELPER METHODS ----------------
+def fetch_channel_logo(channel_id):
+    """Scrapes the channel HTML for the logo (Cost: 0 Units)"""
+    channel_url = f"https://www.youtube.com/channel/{channel_id}"
+    print(f"🖼️ Scraping Logo from: {channel_url}...")
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9'
+    }
+    try:
+        response = requests.get(channel_url, headers=headers, timeout=15)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        meta_image = soup.find('meta', property='og:image')
+        if meta_image and meta_image.get('content'):
+            print(f"✅ Logo found: {meta_image['content']}")
+            return meta_image['content']
+    except Exception as e:
+        print(f"❌ Error scraping logo: {e}")
+    return ""
+
 def chunk_list(data, chunk_size):
     for i in range(0, len(data), chunk_size):
         yield data[i:i + chunk_size]
 
-def normalize_title(title):
-    """Removes extra spaces and makes lowercase for strict matching"""
-    return " ".join(title.split()).lower()
-
-def get_ONLY_live_streams_batch(video_ids):
-    active_live_ids = set()
+def get_live_streams_details_batch(video_ids):
+    """Checks live status and grabs statistics & channel info (Cost: 1 Unit per 50 videos)"""
+    active_live_details = {}
     CHUNK_SIZE = 50 
     
     for chunk in chunk_list(video_ids, CHUNK_SIZE):
         url = "https://www.googleapis.com/youtube/v3/videos"
         params = {
-            "part": "snippet",
+            "part": "snippet,statistics",
             "id": ",".join(chunk),
             "key": YOUTUBE_API_KEY,
             "maxResults": 50
@@ -100,11 +119,15 @@ def get_ONLY_live_streams_batch(video_ids):
                 
                 # ONLY grab videos that are actively "live"
                 if broadcast_content == "live":
-                    active_live_ids.add(vid)
+                    active_live_details[vid] = {
+                        "channelName": item["snippet"].get("channelTitle", ""),
+                        "channelId": item["snippet"].get("channelId", ""),
+                        "viewCount": int(item.get("statistics", {}).get("viewCount", 0))
+                    }
                     print(f"🔴 Detected Active LIVE stream: {vid}")
         except Exception as e:
             print(f"⚠️ Error checking live status: {e}")
-    return active_live_ids
+    return active_live_details
 
 def get_working_image_url(video_id):
     maxres_url = f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
@@ -117,122 +140,6 @@ def get_working_image_url(video_id):
         pass
     return fallback_url
 
-# ---------------- READ EXISTING IDS ----------------
-print(f"\n📖 Fetching existing Video IDs from {COLLECTION_NAME}...")
-
-doc_bhakti = db_bhakti.collection(COLLECTION_NAME).document(ALL_IDS_DOC).get()
-existing_video_map = {}
-is_migration_needed = False
-doc_exists = doc_bhakti.exists
-
-if doc_exists:
-    doc_data = doc_bhakti.to_dict()
-    vid_field = doc_data.get("video_id", {})
-    
-    # Backward compatibility: if the existing field is an array, migrate it to a map
-    if isinstance(vid_field, list):
-        print("🔄 Detected old Array format. Migrating to Map format...")
-        existing_video_map = {vid: "Unknown Title" for vid in vid_field}
-        is_migration_needed = True
-    elif isinstance(vid_field, dict):
-        existing_video_map = vid_field
-
-existing_ids_bhakti = set(existing_video_map.keys())
-
-# Create a set of normalized titles to prevent whitespace/case issues
-existing_titles_bhakti = {normalize_title(t) for t in existing_video_map.values()}
-
-# Auto-migrate immediately so subsequent updates don't fail
-if is_migration_needed:
-    db_bhakti.collection(COLLECTION_NAME).document(ALL_IDS_DOC).set({
-        "video_id": existing_video_map,
-        "total_count": len(existing_video_map)
-    })
-    print("✅ Migration to Map format complete.")
-
-print(f"📦 Existing in Bhakti App: {len(existing_ids_bhakti)}")
-
-# ---------------- CLEANUP STALE & DUPLICATE LIVE STREAMS ----------------
-total_deleted_bhakti = 0
-total_deleted_duplicates = 0
-
-if existing_ids_bhakti:
-    print(f"\n🔄 Checking {len(existing_ids_bhakti)} previously saved live streams...")
-    still_live_ids = get_ONLY_live_streams_batch(list(existing_ids_bhakti))
-    
-    # 1. Find streams that are no longer live
-    stale_ids = existing_ids_bhakti - still_live_ids
-    
-    # 2. Find streams that are ALREADY duplicates in the database map
-    seen_existing_titles = set()
-    duplicate_ids_in_db = set()
-    
-    for vid, title in existing_video_map.items():
-        if vid in stale_ids:
-            continue # Skip if it's already marked as stale
-            
-        norm_t = normalize_title(title)
-        if norm_t in seen_existing_titles and title != "Unknown Title":
-            duplicate_ids_in_db.add(vid)
-            total_deleted_duplicates += 1
-            print(f"🧹 Found DUPLICATE title already in DB to clean up: {title[:40]}...")
-        else:
-            seen_existing_titles.add(norm_t)
-
-    # Combine both stale streams and duplicate streams for deletion
-    ids_to_remove = stale_ids.union(duplicate_ids_in_db)
-
-    if ids_to_remove:
-        print(f"🗑️ Removing {len(stale_ids)} stale streams and {len(duplicate_ids_in_db)} database duplicates...")
-        
-        # Use DELETE_FIELD and Increment to update safely
-        updates = {
-            "total_count": firestore.Increment(-len(ids_to_remove))
-        }
-        
-        for vid in ids_to_remove:
-            target_url = f"https://www.youtube.com/watch?v={vid}"
-            
-            existing_ids_bhakti.remove(vid)
-            if vid in existing_video_map:
-                title = existing_video_map[vid]
-                norm_t = normalize_title(title)
-                if norm_t in existing_titles_bhakti:
-                    # Only remove from the title set if we are deleting the last instance of it
-                    existing_titles_bhakti.remove(norm_t) 
-                del existing_video_map[vid]
-                
-            # Add to map field deletion updates using dot notation
-            updates[f"video_id.{vid}"] = firestore.DELETE_FIELD
-            
-            # Find and delete document by matching the url in the collection
-            docs = db_bhakti.collection(COLLECTION_NAME).where("url", "==", target_url).stream()
-            for doc in docs:
-                doc.reference.delete()
-            total_deleted_bhakti += 1
-
-        # Update ALL_IDS_DOC after deletions
-        if total_deleted_bhakti > 0:
-            db_bhakti.collection(COLLECTION_NAME).document(ALL_IDS_DOC).update(updates)
-            print(f"✅ Updated Bhakti {ALL_IDS_DOC} (Safely Removed {total_deleted_bhakti} streams from map)")
-            
-            # Rebuild existing titles set after deletion to ensure accuracy
-            existing_titles_bhakti = {normalize_title(t) for t in existing_video_map.values()}
-    else:
-        print("✅ All previously saved streams are actively live and unique.")
-
-# ---------------- COUNTERS ----------------
-total_fetched = 0
-total_skipped_existing_id = 0
-total_skipped_existing_title = 0
-total_skipped_not_live = 0
-total_skipped_keywords = 0
-total_skipped_duplicate_titles = 0
-total_inserted_bhakti = 0
-new_ids_bhakti = []
-new_video_updates = {} # To hold additions for map updates
-
-# ---------------- RSS FETCH ----------------
 def fetch_videos_from_channel(channel_id):
     url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
     try:
@@ -249,163 +156,228 @@ def fetch_videos_from_channel(channel_id):
     for entry in entries:
         title_el = entry.find("atom:title", NS)
         video_id_el = entry.find("yt:videoId", NS)
-        
-        if title_el is None or video_id_el is None:
+        published_el = entry.find("atom:published", NS)
+
+        if title_el is None or video_id_el is None or published_el is None:
             continue
+
+        published_dt = datetime.fromisoformat(
+            published_el.text.replace("Z", "+00:00")
+        ).astimezone(timezone.utc)
 
         video_id = video_id_el.text.strip()
 
         videos.append({
             "video_id": video_id,
             "title": title_el.text.strip(),
-            "url": f"https://www.youtube.com/watch?v={video_id}"
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "published": published_dt
         })
     return videos
 
-# ---------------- MAIN LOGIC ----------------
-rss_videos = []
+# ---------------- READ EXISTING IDS ----------------
+print(f"\n📖 Fetching existing Video IDs from {COLLECTION_NAME}...")
 
-# 1. Gather all videos from RSS
+doc = db.collection(COLLECTION_NAME).document(ALL_IDS_DOC).get()
+existing_ids = set(doc.to_dict().get("video_id", [])) if doc.exists else set()
+
+print(f"📦 Existing in Bhakti App: {len(existing_ids)}")
+
+# ---------------- CLEANUP STALE LIVE STREAMS ----------------
+total_deleted = 0
+
+if existing_ids:
+    print(f"\n🔄 Checking {len(existing_ids)} previously saved live streams...")
+    still_live_ids = set(get_live_streams_details_batch(list(existing_ids)).keys())
+    stale_ids = existing_ids - still_live_ids
+
+    if stale_ids:
+        print(f"🗑️ Found {len(stale_ids)} streams no longer live. Cleaning up...")
+        for vid in stale_ids:
+            target_url = f"https://www.youtube.com/watch?v={vid}"
+            
+            # App Cleanup
+            existing_ids.remove(vid)
+            docs = db.collection(COLLECTION_NAME).where(filter=FieldFilter("url", "==", target_url)).stream()
+            for doc_item in docs: 
+                doc_id = doc_item.id
+                doc_item.reference.delete()
+                # Remove from Search_Collection
+                db.collection("Search_Collection").document("streams").set({
+                    doc_id: firestore.DELETE_FIELD
+                }, merge=True)
+            total_deleted += 1
+
+        # Update ALL_IDS_DOC index
+        if total_deleted > 0:
+            db.collection(COLLECTION_NAME).document(ALL_IDS_DOC).set({
+                "video_id": list(existing_ids), "total_count": len(existing_ids)
+            }, merge=True)
+    else:
+        print("✅ All previously saved streams are still actively live.")
+
+# ---------------- COUNTERS ----------------
+total_fetched = 0
+total_skipped_no_live_word = 0
+total_skipped_existing = 0
+total_skipped_keywords = 0
+total_skipped_not_live = 0
+total_skipped_duplicate_titles = 0
+total_inserted = 0
+
+new_ids = []
+
+# ---------------- MAIN LOGIC PIPELINE ----------------
+
+# STEP 1: Gather all videos from RSS
 print("\n---------------- STARTING RSS FETCH ----------------")
+rss_videos = []
 for channel_id in CHANNEL_IDS:
     print(f"🔍 Fetching channel: {channel_id}")
     videos = fetch_videos_from_channel(channel_id)
     total_fetched += len(videos)
     rss_videos.extend(videos)
 
-# 2. Filter out Existing IDs AND Titles
-candidates = []
+# STEP 2: The "Live" Word Title Hack & Exclusions (NO API COST YET)
+print("\n🧹 Filtering out obvious non-live videos, existing DB videos, and bad keywords...")
+candidates_for_api = []
+seen_rss_ids = set()
+
 for v in rss_videos:
     vid = v["video_id"]
     title = v["title"]
-    norm_title = normalize_title(title)
-    
-    # Check ID match
-    if vid in existing_ids_bhakti:
-        total_skipped_existing_id += 1
+
+    # Filter A: The "Live" Word Hack
+    if "live" not in title.lower():
+        total_skipped_no_live_word += 1
         continue
-        
-    # Check Title match against the database
-    if norm_title in existing_titles_bhakti:
-        total_skipped_existing_title += 1
-        print(f"👯 Skipped (Title already in DB): {title[:40]}...")
+
+    # Filter B: Existing in DB Check
+    if vid in existing_ids:
+        total_skipped_existing += 1
         continue
-        
-    # Check Title match against other videos already added to candidates in this same run
-    if any(normalize_title(c["title"]) == norm_title for c in candidates):
+
+    if vid in seen_rss_ids:
         continue
-        
-    candidates.append(v)
 
-print(f"\n📝 Candidates needing processing (missing in DB): {len(candidates)}")
-
-if not candidates:
-    print("✅ No new videos to process for the database.")
-    sys.exit(0)
-
-candidate_ids = [v["video_id"] for v in candidates]
-
-# 3. Check Live Status (API Call)
-print("\n📡 Checking Live status (Filtering OUT normal videos)...")
-active_live_ids = get_ONLY_live_streams_batch(candidate_ids)
-
-# Keep ONLY the candidates that are currently LIVE
-live_candidates = [v for v in candidates if v["video_id"] in active_live_ids]
-total_skipped_not_live = len(candidates) - len(live_candidates)
-
-if not live_candidates:
-    print("✅ No new active live streams found right now.")
-    sys.exit(0)
-
-# 3.5 Deduplicate by EXACT title match before inserting (Extra safety net)
-unique_live_candidates = []
-seen_titles = set()
-
-for v in live_candidates:
-    norm_title = normalize_title(v["title"])
-    if norm_title in seen_titles:
-        print(f"👯 Skipped Duplicate Title in Fetch: {v['title'][:40]}...")
-        total_skipped_duplicate_titles += 1
-    else:
-        seen_titles.add(norm_title)
-        unique_live_candidates.append(v)
-
-live_candidates = unique_live_candidates
-
-if not live_candidates:
-    print("✅ No unique active live streams found right now.")
-    sys.exit(0)
-
-# 4. Insert Final Live Streams into DB
-print("\n🚀 Starting Final Filtering & Firebase Insertion...")
-for v in live_candidates:
-    vid = v["video_id"]
-    title = v["title"]
-    
-    # --- FILTER 1: Title Keywords ---
+    # Filter C: Excluded Bad Keywords check
     found_keyword = False
     for keyword in EXCLUDED_KEYWORDS:
         pattern = r"\b" + re.escape(keyword) + r"\b"
         if re.search(pattern, title, re.IGNORECASE):
             found_keyword = True
-            print(f"🛑 Skipped (Keyword '{keyword}'): {title[:40]}...")
+            print(f"🛑 Bad Keyword '{keyword}': {title[:40]}...")
             break
             
     if found_keyword:
         total_skipped_keywords += 1
         continue
 
-    # --- PREPARE DATABASE DOCUMENT (Strictly only requested fields) ---
+    candidates_for_api.append(v)
+    seen_rss_ids.add(vid)
+
+print(f"\n📝 Candidates surviving local filters needing API checking: {len(candidates_for_api)}")
+
+if not candidates_for_api:
+    print("✅ No new valid candidates found to check against YouTube API.")
+    sys.exit(0)
+
+# STEP 3: API Call (REAL Live Check)
+print("\n📡 Checking Real Live status & fetching details via YouTube API...")
+candidate_ids = [v["video_id"] for v in candidates_for_api]
+active_live_details = get_live_streams_details_batch(candidate_ids)
+
+# Keep ONLY the candidates that the API confirms are currently LIVE
+live_candidates = [v for v in candidates_for_api if v["video_id"] in active_live_details]
+total_skipped_not_live = len(candidates_for_api) - len(live_candidates)
+
+if not live_candidates:
+    print("✅ No API-confirmed active live streams found right now.")
+    sys.exit(0)
+
+# STEP 4: Title Deduplication
+print("\n👯 Checking for Duplicate Titles among confirmed Live streams...")
+unique_live_candidates = []
+seen_titles = set()
+
+for v in live_candidates:
+    if v["title"] in seen_titles:
+        print(f"👯 Skipped Duplicate Title: {v['title'][:40]}...")
+        total_skipped_duplicate_titles += 1
+    else:
+        seen_titles.add(v["title"])
+        unique_live_candidates.append(v)
+
+live_candidates = unique_live_candidates
+
+if not live_candidates:
+    print("✅ No unique active live streams found after deduplication.")
+    sys.exit(0)
+
+# STEP 5: Firebase Push
+print("\n🚀 Starting Firebase Insertion for Final Confirmed Streams...")
+channel_logos = {}
+
+for v in live_candidates:
+    vid = v["video_id"]
+    title = v["title"]
+    
+    details = active_live_details[vid]
+    channel_id = details["channelId"]
+    
+    if channel_id not in channel_logos:
+        channel_logos[channel_id] = fetch_channel_logo(channel_id)
+        
+    logo_url = channel_logos[channel_id]
     final_image_url = get_working_image_url(vid)
-    doc_data = {
+    published_ms = str(int(v["published"].timestamp() * 1000))
+
+    base_doc_data = {
+        "channelLogoUrl": logo_url,
+        "channelName": details["channelName"],
+        "imageUrl": final_image_url,
+        "isLive": True,
+        "timeAgo": published_ms,
         "title": v["title"],
+        "titleLowercase": v["title"].lower(),
         "url": v["url"],
-        "imageUrl": final_image_url
+        "viewCount": details["viewCount"],
+        "timestamp": str(int(time.time() * 1000)), 
     }
 
     # Insert into Bhakti App DB
-    db_bhakti.collection(COLLECTION_NAME).document().set(doc_data)
-    
-    existing_ids_bhakti.add(vid)
-    existing_titles_bhakti.add(normalize_title(title))
-    existing_video_map[vid] = title
-    new_ids_bhakti.append(vid)
-    
-    # Add new entry into the map update dictionary
-    new_video_updates[f"video_id.{vid}"] = title
-    
-    total_inserted_bhakti += 1
-    
-    print(f"➕ Inserted LIVE STREAM: {vid} - {title[:30]}...")
-    time.sleep(0.03)
+    if vid not in existing_ids:
+        doc_ref = db.collection(COLLECTION_NAME).document()
+        doc_ref.set(base_doc_data)
+        
+        # Safely save to Search_Collection
+        db.collection("Search_Collection").document("streams").set({
+            doc_ref.id: base_doc_data["titleLowercase"]
+        }, merge=True)
+        
+        existing_ids.add(vid)
+        new_ids.append(vid)
+        total_inserted += 1
 
-# ---------------- UPDATE ID INDEX ----------------
-if new_video_updates:
-    print(f"\n💾 Safely Updating {ALL_IDS_DOC} Map index for Bhakti App...")
-    
-    # Safely increase total count by amount inserted
-    new_video_updates["total_count"] = firestore.Increment(total_inserted_bhakti)
-    
-    doc_ref = db_bhakti.collection(COLLECTION_NAME).document(ALL_IDS_DOC)
-    
-    if doc_exists:
-        # Securely append map fields
-        doc_ref.update(new_video_updates)
-    else:
-        # If document didn't exist at all yet, initialize it
-        doc_ref.set({
-            "video_id": {vid: existing_video_map[vid] for vid in new_ids_bhakti},
-            "total_count": total_inserted_bhakti
-        })
+        print(f"➕ Inserted LIVE STREAM: {vid} - {title[:30]}...")
+        time.sleep(0.03)
+
+# ---------------- UPDATE ID INDEXES ----------------
+if new_ids:
+    print(f"\n💾 Updating {ALL_IDS_DOC} index for Bhakti App...")
+    db.collection(COLLECTION_NAME).document(ALL_IDS_DOC).set({
+        "video_id": list(existing_ids),
+        "total_count": len(existing_ids)
+    }, merge=True)
 
 # ---------------- SUMMARY ----------------
 print("\n================ SUMMARY ================")
-print(f"🗑️  Total Streams Deleted      : {total_deleted_bhakti} (Stale: {total_deleted_bhakti - total_deleted_duplicates}, Duplicates Cleaned: {total_deleted_duplicates})")
-print(f"📥 Total RSS Fetched           : {total_fetched}")
-print(f"⏭️  Skipped (ID Already in DB) : {total_skipped_existing_id}")
-print(f"⏭️  Skipped (Title already in DB): {total_skipped_existing_title}")
-print(f"🗑️  Skipped (Normal Videos)    : {total_skipped_not_live}")
-print(f"🛑 Skipped (Keywords)          : {total_skipped_keywords}")
-print(f"👯 Skipped (Duplicate Title)   : {total_skipped_duplicate_titles}")
-print(f"➕ Inserted to Bhakti         : {total_inserted_bhakti} (Total Live: {len(existing_ids_bhakti)})")
+print(f"🗑️  Stale Streams Deleted   : {total_deleted}")
+print(f"📥 Total RSS Fetched        : {total_fetched}")
+print(f"✂️  Skipped (No 'Live' word): {total_skipped_no_live_word}")
+print(f"⏭️  Skipped (Already in DB) : {total_skipped_existing}")
+print(f"🛑 Skipped (Bad Keywords)   : {total_skipped_keywords}")
+print(f"🗑️  Skipped (API: Not Live) : {total_skipped_not_live}")
+print(f"👯 Skipped (Duplicate Title): {total_skipped_duplicate_titles}")
+print(f"➕ Inserted to Bhakti App   : {total_inserted} (Total Live: {len(existing_ids)})")
 print("========================================")
