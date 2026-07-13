@@ -33,13 +33,6 @@ jobs:
         run: |
           python Full-Videos-Fetch.py
 
-      - name: 🚀 Run Live Videos Fetch
-        env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
-        run: |
-          python All-Live-Fetch.py
-
 
       - name: 🚀 Run Live Videos Fetch More
         env:
