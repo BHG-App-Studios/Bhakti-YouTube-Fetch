@@ -102,9 +102,10 @@ def extract_videos(video_ids):
 
     urls = [f"https://www.youtube.com/watch?v={v}" for v in ids]
     cmd = base_args() + [
-        "-j",                       # one JSON object per line
+        "-j",                          # one JSON object per line
         "--no-download",
-        "--ignore-errors",          # skip a bad video, keep going
+        "--ignore-errors",             # skip a bad video, keep going
+        "--ignore-no-formats-error",   # ended live streams have no formats: still emit metadata (live_status)
         "--sleep-requests", "1",
         "--extractor-retries", "3",
     ] + urls

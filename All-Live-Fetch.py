@@ -148,7 +148,6 @@ if existing_ids:
 
 # ---------------- COUNTERS ----------------
 total_fetched = 0
-total_skipped_no_live_word = 0
 total_skipped_existing = 0
 total_skipped_keywords = 0
 total_skipped_not_live = 0
@@ -168,8 +167,9 @@ for channel_id in CHANNEL_IDS:
     total_fetched += len(videos)
     scanned_videos.extend(videos)
 
-# STEP 2: The "Live" Word Title Hack & Exclusions (NO extraction cost yet)
-print("\n🧹 Filtering out obvious non-live videos, existing DB videos, and bad keywords...")
+# STEP 2: Exclusions (NO extraction cost yet). The real live check is done later
+# via yt-dlp (live_status == "is_live"), so no title-based "live" word filter here.
+print("\n🧹 Filtering out existing DB videos and bad keywords...")
 candidates_for_extract = []
 seen_ids = set()
 
@@ -177,12 +177,7 @@ for v in scanned_videos:
     vid = v["video_id"]
     title = v["title"]
 
-    # Filter A: The "Live" Word Hack
-    if "live" not in title.lower():
-        total_skipped_no_live_word += 1
-        continue
-
-    # Filter B: Existing in DB Check
+    # Filter A: Existing in DB Check
     if vid in existing_ids:
         total_skipped_existing += 1
         continue
@@ -190,7 +185,7 @@ for v in scanned_videos:
     if vid in seen_ids:
         continue
 
-    # Filter C: Excluded Bad Keywords check
+    # Filter B: Excluded Bad Keywords check
     found_keyword = False
     for keyword in EXCLUDED_KEYWORDS:
         pattern = r"\b" + re.escape(keyword) + r"\b"
@@ -304,7 +299,6 @@ if new_ids:
 print("\n================ SUMMARY ================")
 print(f"🗑️  Stale Streams Deleted   : {total_deleted}")
 print(f"📥 Total Scanned (yt-dlp)   : {total_fetched}")
-print(f"✂️  Skipped (No 'Live' word): {total_skipped_no_live_word}")
 print(f"⏭️  Skipped (Already in DB) : {total_skipped_existing}")
 print(f"🛑 Skipped (Bad Keywords)   : {total_skipped_keywords}")
 print(f"🗑️  Skipped (Not Live)      : {total_skipped_not_live}")
