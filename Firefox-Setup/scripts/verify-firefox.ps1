@@ -19,6 +19,34 @@ New-Item -ItemType Directory -Path $ScreenshotDirectory -Force | Out-Null
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+if (-not ('WindowInput' -as [type])) {
+    Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class WindowInput
+{
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [DllImport("user32.dll")]
+    public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    public static extern bool SetCursorPos(int x, int y);
+
+    [DllImport("user32.dll")]
+    public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
+}
+'@
+}
+
 function Save-Screenshot {
     param(
         [Parameter(Mandatory = $true)]
@@ -100,8 +128,19 @@ if (-not $windowShell.AppActivate($firefoxWindow.Id)) {
 }
 
 Start-Sleep -Milliseconds 500
-Write-Host 'Sending Space key to start YouTube playback...'
-[System.Windows.Forms.SendKeys]::SendWait(' ')
+if (-not [WindowInput]::GetWindowRect($firefoxWindow.MainWindowHandle, [ref]$windowBounds)) {
+    throw 'Could not get the Firefox window bounds to start YouTube playback.'
+}
+
+$centerX = [int](($windowBounds.Left + $windowBounds.Right) / 2)
+$centerY = [int](($windowBounds.Top + $windowBounds.Bottom) / 2)
+$originalCursorPosition = [System.Windows.Forms.Cursor]::Position
+
+Write-Host "Clicking the center of Firefox at ($centerX, $centerY) to start YouTube playback..."
+[WindowInput]::SetCursorPos($centerX, $centerY) | Out-Null
+[WindowInput]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero) # MOUSEEVENTF_LEFTDOWN
+[WindowInput]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero) # MOUSEEVENTF_LEFTUP
+[System.Windows.Forms.Cursor]::Position = $originalCursorPosition
 
 Write-Host 'Waiting 30 seconds before continuing...'
 Start-Sleep -Seconds 30
