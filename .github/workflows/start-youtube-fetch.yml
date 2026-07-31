@@ -22,7 +22,7 @@ jobs:
           & "$env:GITHUB_WORKSPACE\Firefox-Setup\scripts\setup-firefox.ps1" `
             -Workspace "$env:GITHUB_WORKSPACE\Firefox-Setup"
 
-      - name: Open YouTube for 1 minute and close Firefox
+      - name: Open YouTube for some time then close Firefox
         shell: pwsh
         env:
           FIREFOX_EXECUTABLE: ${{ steps.firefox.outputs.firefox_executable }}
