@@ -110,8 +110,8 @@ $youtubeUrl = "https://www.youtube.com/channel/$selectedChannelId/live"
 Write-Host "Opening random Bhakti channel in Firefox: $youtubeUrl"
 Start-Process -FilePath $FirefoxExecutable -ArgumentList @($youtubeUrl)
 
-Write-Host 'Waiting 5 seconds for YouTube to load...'
-Start-Sleep -Seconds 5
+Write-Host 'Waiting 15 seconds for the YouTube player to load...'
+Start-Sleep -Seconds 15
 
 $firefoxWindow = Get-Process -Name firefox -ErrorAction SilentlyContinue |
     Where-Object { $_.MainWindowHandle -ne 0 } |
