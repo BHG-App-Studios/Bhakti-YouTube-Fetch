@@ -1,4 +1,4 @@
-name: YouTube Browser Setup
+name: Start YouTube Fetch
 
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ jobs:
           & "$env:GITHUB_WORKSPACE\Firefox-Setup\scripts\setup-firefox.ps1" `
             -Workspace "$env:GITHUB_WORKSPACE\Firefox-Setup"
 
-      - name: Open YouTube for 30 seconds and close Firefox
+      - name: Open YouTube for 1 minute and close Firefox
         shell: pwsh
         env:
           FIREFOX_EXECUTABLE: ${{ steps.firefox.outputs.firefox_executable }}
@@ -63,3 +63,26 @@ jobs:
           path: ${{ runner.temp }}/firefox-verification/*.jpg
           if-no-files-found: error
           retention-days: 7
+
+      - name: Install Firebase fetch dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests firebase-admin google-cloud-firestore
+          pip install requests firebase-admin beautifulsoup4
+
+      - name: Run All Videos Fetch
+        shell: pwsh
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        run: |
+          python All-Videos-Fetch.py
+
+      - name: Run Live Videos Fetch
+        shell: pwsh
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        run: |
+          python All-Live-Fetch.py
