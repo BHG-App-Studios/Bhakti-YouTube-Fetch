@@ -113,6 +113,8 @@ def get_live_streams_details_batch(video_ids):
             r = requests.get(url, params=params, timeout=15)
             r.raise_for_status()
             data = r.json()
+            if not isinstance(data, dict) or "items" not in data:
+                raise ValueError("YouTube API returned an invalid payload")
             for item in data.get("items", []):
                 vid = item["id"]
                 broadcast_content = item["snippet"].get("liveBroadcastContent", "none")
@@ -127,6 +129,7 @@ def get_live_streams_details_batch(video_ids):
                     print(f"🔴 Detected Active LIVE stream: {vid}")
         except Exception as e:
             print(f"⚠️ Error checking live status: {e}")
+            return None
     return active_live_details
 
 def get_working_image_url(video_id):
@@ -149,7 +152,11 @@ def fetch_videos_from_channel(channel_id):
         print(f"⚠️ Error fetching channel {channel_id}: {e}")
         return []
 
-    root = ET.fromstring(response.text)
+    try:
+        root = ET.fromstring(response.text)
+    except ET.ParseError as e:
+        print(f"⚠️ Invalid RSS XML for channel {channel_id}: {e}")
+        return []
     videos = []
     entries = root.findall("atom:entry", NS)
     
@@ -161,9 +168,13 @@ def fetch_videos_from_channel(channel_id):
         if title_el is None or video_id_el is None or published_el is None:
             continue
 
-        published_dt = datetime.fromisoformat(
-            published_el.text.replace("Z", "+00:00")
-        ).astimezone(timezone.utc)
+        try:
+            published_dt = datetime.fromisoformat(
+                published_el.text.replace("Z", "+00:00")
+            ).astimezone(timezone.utc)
+        except (TypeError, ValueError) as e:
+            print(f"⚠️ Invalid published timestamp for {video_id_el.text!r}: {e}")
+            continue
 
         video_id = video_id_el.text.strip()
 
@@ -179,7 +190,8 @@ def fetch_videos_from_channel(channel_id):
 print(f"\n📖 Fetching existing Video IDs from {COLLECTION_NAME}...")
 
 doc = db.collection(COLLECTION_NAME).document(ALL_IDS_DOC).get()
-existing_ids = set(doc.to_dict().get("video_id", [])) if doc.exists else set()
+raw_ids = doc.to_dict().get("video_id", []) if doc.exists else []
+existing_ids = set(raw_ids) if isinstance(raw_ids, (list, tuple, set)) else set()
 
 print(f"📦 Existing in Bhakti App: {len(existing_ids)}")
 
@@ -188,7 +200,11 @@ total_deleted = 0
 
 if existing_ids:
     print(f"\n🔄 Checking {len(existing_ids)} previously saved live streams...")
-    still_live_ids = set(get_live_streams_details_batch(list(existing_ids)).keys())
+    live_check = get_live_streams_details_batch(list(existing_ids))
+    if live_check is None:
+        print("❌ YouTube API unavailable; aborting stale-stream cleanup and this run.")
+        sys.exit(1)
+    still_live_ids = set(live_check.keys())
     stale_ids = existing_ids - still_live_ids
 
     if stale_ids:
@@ -286,6 +302,10 @@ if not candidates_for_api:
 print("\n📡 Checking Real Live status & fetching details via YouTube API...")
 candidate_ids = [v["video_id"] for v in candidates_for_api]
 active_live_details = get_live_streams_details_batch(candidate_ids)
+
+if active_live_details is None:
+    print("❌ YouTube API unavailable; no database changes will be made.")
+    sys.exit(1)
 
 # Keep ONLY the candidates that the API confirms are currently LIVE
 live_candidates = [v for v in candidates_for_api if v["video_id"] in active_live_details]
