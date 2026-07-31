@@ -7,9 +7,11 @@ import os
 import sys
 import time
 import re
+import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from youtube_ytdlp import (
-    list_channels,
+    base_args,
     extract_videos,
     channel_name,
     live_status,
@@ -54,6 +56,19 @@ COLLECTION_NAME = "liveStreams"
 ALL_IDS_DOC = "-All_Live_Videos_Id"
 LIVE_SCAN_LIMIT = 15  # 🔢 latest streams to scan per channel (yt-dlp --playlist-end)
 
+# Parallel scan tuning (overridable via env)
+SCAN_WORKERS = int(os.environ.get("LIVE_SCAN_WORKERS", "8"))
+SCAN_TIMEOUT = int(os.environ.get("LIVE_SCAN_TIMEOUT", "180"))  # seconds per channel
+
+# One yt-dlp pass per channel returns ONLY currently-live streams, already carrying
+# every field the Firebase doc needs — no second full-extraction step is required.
+# %(...j) prints a compact JSON object we can parse line-by-line.
+LIVE_PRINT_TEMPLATE = (
+    "%(.{id,title,channel,channel_id,uploader,uploader_id,"
+    "concurrent_view_count,view_count,release_timestamp,timestamp,"
+    "upload_date,live_status})j"
+)
+
 # Env variable for single service account (no YouTube API key needed anymore)
 SERVICE_ACCOUNT = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
 
@@ -69,23 +84,73 @@ app_bhakti = firebase_admin.initialize_app(cred, name='bhakti_app')
 db = firestore.client(app=app_bhakti)
 
 
-# ---------------- HELPER ----------------
-def find_active_live_ids(video_ids):
-    """Extract details for the given ids and return {id: info} for those live now.
+# ---------------- FAST LIVE SCAN (single-pass per channel) ----------------
+def scan_channel_live(channel_id, limit):
+    """Return a list of info dicts for streams that are LIVE RIGHT NOW on a channel.
 
-    Returns None on total extraction failure so callers can abort safely.
+    Uses `--match-filter "live_status=is_live"` so yt-dlp only emits currently-live
+    videos, and `--print <json>` so each emitted line already contains the details
+    we need. Never raises: on any failure it logs and returns an empty list (that
+    channel simply contributes nothing this run — nothing is deleted as a result).
     """
-    if not video_ids:
-        return {}
-    details = extract_videos(video_ids)
-    if not details:
-        return None
-    active = {}
-    for vid, info in details.items():
-        if live_status(info) == "is_live":
-            active[vid] = info
-            print(f"🔴 Detected Active LIVE stream: {vid}")
-    return active
+    url = f"https://www.youtube.com/channel/{channel_id}/streams"
+    cmd = base_args() + [
+        "--playlist-end", str(limit),
+        "--match-filter", "live_status=is_live",
+        "--ignore-no-formats-error",   # ended/interrupted streams have no formats: don't abort the channel
+        "--no-download",
+        "--print", LIVE_PRINT_TEMPLATE,
+        url,
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=SCAN_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"⚠️ Live scan timed out for {channel_id}; skipping this channel this run.")
+        return []
+    except Exception as e:
+        print(f"⚠️ Live scan failed for {channel_id}: {e}")
+        return []
+
+    infos = []
+    for line in (result.stdout or "").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            info = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        # Belt-and-suspenders: only trust rows yt-dlp itself marked is_live.
+        if info.get("id") and info.get("live_status") == "is_live":
+            infos.append(info)
+    return infos
+
+
+def scan_all_live(channel_ids, limit):
+    """Scan every channel in parallel. Returns {video_id: info} for all live-now streams."""
+    live = {}
+    workers = max(1, min(SCAN_WORKERS, len(channel_ids)))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_map = {
+            executor.submit(scan_channel_live, cid, limit): cid
+            for cid in channel_ids
+        }
+        for future in as_completed(future_map):
+            cid = future_map[future]
+            try:
+                for info in future.result():
+                    # First occurrence wins (a given id only appears once anyway).
+                    live.setdefault(info["id"], info)
+            except Exception as e:
+                print(f"⚠️ Live scan failed for {cid}: {e}")
+    return live
 
 
 # ---------------- READ EXISTING IDS ----------------
@@ -97,37 +162,59 @@ existing_ids = set(raw_ids) if isinstance(raw_ids, (list, tuple, set)) else set(
 
 print(f"📦 Existing in Bhakti App: {len(existing_ids)}")
 
-# ---------------- CLEANUP STALE LIVE STREAMS ----------------
+# ---------------- ONE FAST PARALLEL SCAN (discovery + live-check + details) ----------------
+print("\n---------------- STARTING FAST LIVE SCAN ----------------")
+print(f"🔍 Scanning {len(CHANNEL_IDS)} channels in parallel (match-filter live_status=is_live)...")
+scan_start = time.time()
+live_now = scan_all_live(CHANNEL_IDS, LIVE_SCAN_LIMIT)
+print(f"⚡ Scan complete in {time.time() - scan_start:.1f}s — {len(live_now)} live stream(s) found across channels.")
+
+# ---------------- COUNTERS ----------------
 total_deleted = 0
+total_fetched = len(live_now)
+total_skipped_existing = 0
+total_skipped_keywords = 0
+total_skipped_duplicate_titles = 0
+total_inserted = 0
 
+new_ids = []
+
+# ---------------- CLEANUP STALE LIVE STREAMS (SAFE / DEFINITIVE) ----------------
+# A stored stream is a "suspect" only if it did NOT appear in the fresh live scan.
+# We NEVER delete on the scan alone: if the scan window missed it or a channel scan
+# failed, we do an explicit, definitive re-extract and delete ONLY when yt-dlp
+# confirms a non-live status. Unverifiable streams are left in place for next run.
 if existing_ids:
-    print(f"\n🔄 Checking {len(existing_ids)} previously saved live streams...")
-    details = extract_videos(list(existing_ids))
-    if not details:
-        print("❌ yt-dlp unavailable; aborting stale-stream cleanup and this run.")
-        sys.exit(1)
+    suspects = [vid for vid in existing_ids if vid not in live_now]
+    still_live_from_scan = len(existing_ids) - len(suspects)
+    print(f"\n🔄 {still_live_from_scan} stored stream(s) confirmed still live by scan; "
+          f"re-checking {len(suspects)} suspect(s) definitively...")
 
-    # Only delete a stream when yt-dlp DEFINITIVELY confirms it is no longer live
-    # (extracted OK with a non-live status, e.g. was_live/post_live). If a video
-    # could not be extracted at all (transient error / private / removed), leave it
-    # for the next run instead of risking deletion of a stream that is still live.
     stale_ids = set()
-    for vid in existing_ids:
-        info = details.get(vid)
-        if info is None:
-            print(f"⚠️ Could not verify {vid}; leaving in place for next run.")
-            continue
-        if live_status(info) != "is_live":
-            stale_ids.add(vid)
+    if suspects:
+        details = extract_videos(suspects)
+        if not details:
+            # Total extraction failure: do NOT delete anything (safety first).
+            print("⚠️ Could not verify any suspect (yt-dlp returned nothing); "
+                  "skipping stale cleanup this run to protect the database.")
+        else:
+            for vid in suspects:
+                info = details.get(vid)
+                if info is None:
+                    print(f"⚠️ Could not verify {vid}; leaving in place for next run.")
+                    continue
+                if live_status(info) != "is_live":
+                    stale_ids.add(vid)
 
     if stale_ids:
-        print(f"🗑️ Found {len(stale_ids)} streams no longer live. Cleaning up...")
+        print(f"🗑️ {len(stale_ids)} stream(s) definitively no longer live. Cleaning up...")
         for vid in stale_ids:
             target_url = f"https://www.youtube.com/watch?v={vid}"
 
-            # App Cleanup
-            existing_ids.remove(vid)
-            docs = db.collection(COLLECTION_NAME).where(filter=FieldFilter("url", "==", target_url)).stream()
+            existing_ids.discard(vid)
+            docs = db.collection(COLLECTION_NAME).where(
+                filter=FieldFilter("url", "==", target_url)
+            ).stream()
             for doc_item in docs:
                 doc_id = doc_item.id
                 doc_item.reference.delete()
@@ -137,51 +224,29 @@ if existing_ids:
                 }, merge=True)
             total_deleted += 1
 
-        # Update ALL_IDS_DOC index
-        if total_deleted > 0:
-            db.collection(COLLECTION_NAME).document(ALL_IDS_DOC).set({
-                "video_id": list(existing_ids), "total_count": len(existing_ids)
-            }, merge=True)
+        # Update ALL_IDS_DOC index after deletions
+        db.collection(COLLECTION_NAME).document(ALL_IDS_DOC).set({
+            "video_id": list(existing_ids), "total_count": len(existing_ids)
+        }, merge=True)
     else:
-        print("✅ All previously saved streams are still actively live.")
+        print("✅ No stale streams to remove.")
 
-# ---------------- COUNTERS ----------------
-total_fetched = 0
-total_skipped_existing = 0
-total_skipped_keywords = 0
-total_skipped_not_live = 0
-total_skipped_duplicate_titles = 0
-total_inserted = 0
+# ---------------- SELECT NEW LIVE STREAMS TO INSERT ----------------
+# Everything in live_now is already confirmed is_live and already carries full
+# details, so there is NO second extraction step. We just filter + dedup + insert.
+print("\n🧹 Selecting new live streams (existing/keyword filters)...")
+candidates = []
+for vid, info in live_now.items():
+    title = (info.get("title") or "").strip()
+    if not title:
+        continue
 
-new_ids = []
-
-# ---------------- MAIN LOGIC PIPELINE ----------------
-
-# STEP 1: Gather recent streams per channel via yt-dlp (the /streams tab).
-print("\n---------------- STARTING yt-dlp STREAMS SCAN ----------------")
-print(f"🔍 Scanning {len(CHANNEL_IDS)} channels in parallel...")
-scanned_videos = list_channels(CHANNEL_IDS, tab="streams", limit=LIVE_SCAN_LIMIT)
-total_fetched = len(scanned_videos)
-
-# STEP 2: Exclusions (NO extraction cost yet). The real live check is done later
-# via yt-dlp (live_status == "is_live"), so no title-based "live" word filter here.
-print("\n🧹 Filtering out existing DB videos and bad keywords...")
-candidates_for_extract = []
-seen_ids = set()
-
-for v in scanned_videos:
-    vid = v["video_id"]
-    title = v["title"]
-
-    # Filter A: Existing in DB Check
+    # Filter A: already stored
     if vid in existing_ids:
         total_skipped_existing += 1
         continue
 
-    if vid in seen_ids:
-        continue
-
-    # Filter B: Excluded Bad Keywords check
+    # Filter B: excluded keywords (whole word, case-insensitive)
     found_keyword = False
     for keyword in EXCLUDED_KEYWORDS:
         pattern = r"\b" + re.escape(keyword) + r"\b"
@@ -189,85 +254,51 @@ for v in scanned_videos:
             found_keyword = True
             print(f"🛑 Bad Keyword '{keyword}': {title[:40]}...")
             break
-
     if found_keyword:
         total_skipped_keywords += 1
         continue
 
-    candidates_for_extract.append(v)
-    seen_ids.add(vid)
+    info["title"] = title
+    candidates.append((vid, info))
 
-print(f"\n📝 Candidates surviving local filters needing extraction: {len(candidates_for_extract)}")
-
-if not candidates_for_extract:
-    print("✅ No new valid candidates found to verify with yt-dlp.")
-    sys.exit(0)
-
-# STEP 3: Real Live Check via yt-dlp
-print("\n📡 Checking Real Live status & fetching details via yt-dlp...")
-candidate_ids = [v["video_id"] for v in candidates_for_extract]
-active_live_details = find_active_live_ids(candidate_ids)
-
-if active_live_details is None:
-    print("❌ yt-dlp unavailable; no database changes will be made.")
-    sys.exit(1)
-
-# Keep ONLY the candidates confirmed currently LIVE
-live_candidates = [v for v in candidates_for_extract if v["video_id"] in active_live_details]
-total_skipped_not_live = len(candidates_for_extract) - len(live_candidates)
-
-if not live_candidates:
-    print("✅ No confirmed active live streams found right now.")
-    sys.exit(0)
-
-# STEP 4: Title Deduplication
-print("\n👯 Checking for Duplicate Titles among confirmed Live streams...")
-unique_live_candidates = []
+# Title deduplication among the new candidates
+print("👯 De-duplicating titles among new candidates...")
+unique_candidates = []
 seen_titles = set()
-
-for v in live_candidates:
-    title = active_live_details[v["video_id"]].get("title") or v["title"]
-    v["title"] = title
+for vid, info in candidates:
+    title = info["title"]
     if title in seen_titles:
         print(f"👯 Skipped Duplicate Title: {title[:40]}...")
         total_skipped_duplicate_titles += 1
-    else:
-        seen_titles.add(title)
-        unique_live_candidates.append(v)
+        continue
+    seen_titles.add(title)
+    unique_candidates.append((vid, info))
 
-live_candidates = unique_live_candidates
+if not unique_candidates:
+    print("✅ No new live streams to insert.")
+else:
+    # ---------------- FIREBASE PUSH ----------------
+    print(f"\n🚀 Inserting {len(unique_candidates)} confirmed live stream(s) into Bhakti App...")
+    for vid, info in unique_candidates:
+        title = info["title"]
 
-if not live_candidates:
-    print("✅ No unique active live streams found after deduplication.")
-    sys.exit(0)
+        ch_id = info.get("channel_id") or info.get("uploader_id") or ""
+        logo_url = fetch_channel_logo(ch_id) if ch_id else ""
+        final_image_url = get_working_image_url(vid)
 
-# STEP 5: Firebase Push
-print("\n🚀 Starting Firebase Insertion for Final Confirmed Streams...")
+        base_doc_data = {
+            "channelLogoUrl": logo_url,
+            "channelName": channel_name(info),
+            "imageUrl": final_image_url,
+            "isLive": True,
+            "timeAgo": published_ms(info),
+            "title": title,
+            "titleLowercase": title.lower(),
+            "url": f"https://www.youtube.com/watch?v={vid}",
+            "viewCount": view_count(info, live=True),
+            "timestamp": str(int(time.time() * 1000)),
+        }
 
-for v in live_candidates:
-    vid = v["video_id"]
-    info = active_live_details[vid]
-    title = info.get("title") or v["title"]
-
-    ch_id = info.get("channel_id") or info.get("uploader_id") or ""
-    logo_url = fetch_channel_logo(ch_id) if ch_id else ""
-    final_image_url = get_working_image_url(vid)
-
-    base_doc_data = {
-        "channelLogoUrl": logo_url,
-        "channelName": channel_name(info),
-        "imageUrl": final_image_url,
-        "isLive": True,
-        "timeAgo": published_ms(info),
-        "title": title,
-        "titleLowercase": title.lower(),
-        "url": f"https://www.youtube.com/watch?v={vid}",
-        "viewCount": view_count(info, live=True),
-        "timestamp": str(int(time.time() * 1000)),
-    }
-
-    # Insert into Bhakti App DB
-    if vid not in existing_ids:
         doc_ref = db.collection(COLLECTION_NAME).document()
         doc_ref.set(base_doc_data)
 
@@ -281,7 +312,6 @@ for v in live_candidates:
         total_inserted += 1
 
         print(f"➕ Inserted LIVE STREAM: {vid} - {title[:30]}...")
-        time.sleep(0.03)
 
 # ---------------- UPDATE ID INDEXES ----------------
 if new_ids:
@@ -294,10 +324,9 @@ if new_ids:
 # ---------------- SUMMARY ----------------
 print("\n================ SUMMARY ================")
 print(f"🗑️  Stale Streams Deleted   : {total_deleted}")
-print(f"📥 Total Scanned (yt-dlp)   : {total_fetched}")
+print(f"📥 Live Found (yt-dlp scan) : {total_fetched}")
 print(f"⏭️  Skipped (Already in DB) : {total_skipped_existing}")
 print(f"🛑 Skipped (Bad Keywords)   : {total_skipped_keywords}")
-print(f"🗑️  Skipped (Not Live)      : {total_skipped_not_live}")
 print(f"👯 Skipped (Duplicate Title): {total_skipped_duplicate_titles}")
 print(f"➕ Inserted to Bhakti App   : {total_inserted} (Total Live: {len(existing_ids)})")
 print("========================================")
