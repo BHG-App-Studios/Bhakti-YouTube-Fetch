@@ -20,6 +20,7 @@ from youtube_ytdlp import (
     get_working_image_url,
     fetch_channel_logo,
 )
+from thumbnail_dedup import deduplicate_by_thumbnail
 
 # ---------------- CONFIG ----------------
 CHANNEL_IDS = [
@@ -175,6 +176,7 @@ total_fetched = len(live_now)
 total_skipped_existing = 0
 total_skipped_keywords = 0
 total_skipped_duplicate_titles = 0
+total_skipped_duplicate_thumbnails = 0
 total_inserted = 0
 
 new_ids = []
@@ -317,6 +319,22 @@ for vid, info in candidates:
 
 unique_candidates = list(best_by_title.values())
 
+# Per-channel THUMBNAIL de-duplication (catches same broadcast under different
+# titles, which title-dedup above cannot). Reserved = already-stored still-live
+# streams (they reappear in live_now for FREE), used only as duplicate reference
+# points so a new stream that visually duplicates a stored one is dropped in
+# favour of the stored one (no DB churn). Among purely NEW duplicates, the
+# latest-started stream is kept. Fail-open: any un-hashable thumbnail is kept.
+if unique_candidates:
+    print("\n🖼️  De-duplicating thumbnails per channel (perceptual hash)...")
+    reserved_streams = [
+        (vid, info) for vid, info in live_now.items() if vid in existing_ids
+    ]
+    unique_candidates, thumb_dropped = deduplicate_by_thumbnail(
+        unique_candidates, reserved=reserved_streams
+    )
+    total_skipped_duplicate_thumbnails = len(thumb_dropped)
+
 if not unique_candidates:
     print("✅ No new live streams to insert.")
 else:
@@ -374,5 +392,6 @@ print(f"📥 Live Found (yt-dlp scan) : {total_fetched}")
 print(f"⏭️  Skipped (Already in DB) : {total_skipped_existing}")
 print(f"🛑 Skipped (Bad Keywords)   : {total_skipped_keywords}")
 print(f"👯 Skipped (Duplicate Title): {total_skipped_duplicate_titles}")
+print(f"🖼️  Skipped (Dup Thumbnail)  : {total_skipped_duplicate_thumbnails}")
 print(f"➕ Inserted to Bhakti App   : {total_inserted} (Total Live: {len(existing_ids)})")
 print("========================================")
