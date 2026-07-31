@@ -261,18 +261,61 @@ for vid, info in live_now.items():
     info["title"] = title
     candidates.append((vid, info))
 
-# Title deduplication among the new candidates
-print("👯 De-duplicating titles among new candidates...")
-unique_candidates = []
+# Title deduplication + "keep the highest-view stream" selection.
+#
+# A candidate must be skipped when its title matches EITHER a stream already stored
+# in the DB OR another NEW candidate in this run — same title (different id) means
+# it is effectively the same broadcast, and 24/7 channels emit many such copies at
+# once, which is what previously accumulated duplicate titles over successive runs.
+#
+#   1. Titles already live AND stored in the DB are reserved first. They come for
+#      FREE from this same scan (any stored stream still live reappears in live_now),
+#      so NO extra Firebase read is needed. We never insert a same-title copy of one
+#      that is already in the DB, and we never churn/replace the stored one.
+#   2. Among the remaining NEW candidates that share a title, we keep exactly ONE —
+#      the stream with the MOST views (missing view data counts as 0 / lowest). Ties
+#      break deterministically by video id, so the same stream wins on every run.
+print("👯 De-duplicating titles (keeping the highest-view stream per title)...")
+
+
+def _views(info):
+    """Total views as an int; 0 when the scan carried no usable view number."""
+    try:
+        return int(view_count(info))
+    except (TypeError, ValueError):
+        return 0
+
+
 seen_titles = set()
+for vid, info in live_now.items():
+    if vid in existing_ids:
+        t = (info.get("title") or "").strip()
+        if t:
+            seen_titles.add(t)  # reserve titles already live & stored in the DB
+
+best_by_title = {}  # title -> (vid, info) winner among NEW candidates
 for vid, info in candidates:
     title = info["title"]
+
+    # Same title as a stream already stored & still live → never insert a copy.
     if title in seen_titles:
-        print(f"👯 Skipped Duplicate Title: {title[:40]}...")
+        print(f"👯 Skipped Duplicate Title (already in DB): {title[:40]}...")
         total_skipped_duplicate_titles += 1
         continue
-    seen_titles.add(title)
-    unique_candidates.append((vid, info))
+
+    current = best_by_title.get(title)
+    if current is None:
+        best_by_title[title] = (vid, info)
+        continue
+
+    # Two NEW candidates share this title: keep the higher-view one (id breaks ties).
+    cur_vid, cur_info = current
+    if (_views(info), vid) > (_views(cur_info), cur_vid):
+        best_by_title[title] = (vid, info)
+    print(f"👯 Duplicate Title (kept higher-view stream): {title[:40]}...")
+    total_skipped_duplicate_titles += 1
+
+unique_candidates = list(best_by_title.values())
 
 if not unique_candidates:
     print("✅ No new live streams to insert.")
