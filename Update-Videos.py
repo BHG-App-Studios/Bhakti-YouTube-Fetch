@@ -9,22 +9,25 @@ The Data API's videos.list (part=statistics) checks up to 50 IDs per call at a
 cost of 1 quota unit each — fast for thousands of videos and with no bot-detection
 risk, unlike yt-dlp. A deleted/private video is simply omitted from the response,
 which is the definitive signal that it is gone.
+
+Firebase writes are the slow part when done naively (one query per video), so we
+read the collection ONCE into a url->doc map and apply every change with batched
+writes instead of a round-trip per video.
 """
 
 import firebase_admin
 from firebase_admin import credentials, firestore
-from google.cloud.firestore_v1.base_query import FieldFilter
 import json
 import os
 import sys
-import time
 
 import requests
 
 # ---------------- CONFIG ----------------
 COLLECTION_NAME = "Listen_Kirtans_Videos_New"
 ALL_IDS_DOC = "-All_Videos_Id"
-API_CHUNK_SIZE = 50  # YouTube Data API allows up to 50 IDs per videos.list call
+API_CHUNK_SIZE = 50   # YouTube Data API allows up to 50 IDs per videos.list call
+WRITE_BATCH_SIZE = 450  # Firestore hard limit is 500 writes per batch
 
 SERVICE_ACCOUNT = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY")
@@ -112,27 +115,71 @@ unverified = len(video_ids) - len(verified_ids)
 if unverified:
     print(f"⏭️  Unverified (skipped): {unverified}")
 
-# ---------------- DELETE GONE VIDEOS ----------------
-total_deleted = 0
+# ---------------- LOAD COLLECTION ONCE (url -> [doc snapshots]) ----------------
+# The key speed fix: one streamed read of the collection instead of a separate
+# Firestore query per video (which was 1000+ sequential network round-trips).
+print("\n📚 Loading existing documents (single pass)...")
+url_to_docs = {}
+for snap in db.collection(COLLECTION_NAME).stream():
+    d = snap.to_dict() or {}
+    url = d.get("url")
+    if url:
+        url_to_docs.setdefault(url, []).append(snap)
+print(f"📚 Indexed {sum(len(v) for v in url_to_docs.values())} documents by url")
 
+# ---------------- APPLY CHANGES (batched writes) ----------------
+batch = db.batch()
+ops_in_batch = 0
+total_deleted = 0
+total_updated = 0
+search_field_deletes = {}  # doc_id -> DELETE_FIELD (one combined write at the end)
+
+
+def flush_batch(force=False):
+    global batch, ops_in_batch
+    if ops_in_batch and (force or ops_in_batch >= WRITE_BATCH_SIZE):
+        batch.commit()
+        batch = db.batch()
+        ops_in_batch = 0
+
+
+# --- DELETE GONE VIDEOS ---
 if gone_ids:
-    print(f"\n🗑️ Removing {len(gone_ids)} deleted/private videos from Firebase...")
+    print(f"\n🗑️ Removing {len(gone_ids)} deleted/private videos...")
     for vid in gone_ids:
         target_url = f"https://www.youtube.com/watch?v={vid}"
-        docs = db.collection(COLLECTION_NAME).where(
-            filter=FieldFilter("url", "==", target_url)
-        ).stream()
-        for doc_item in docs:
-            doc_id = doc_item.id
-            doc_item.reference.delete()
-            # Remove from Search_Collection
-            db.collection("Search_Collection").document("streams").set({
-                doc_id: firestore.DELETE_FIELD
-            }, merge=True)
+        for snap in url_to_docs.get(target_url, []):
+            batch.delete(snap.reference)
+            ops_in_batch += 1
+            # Field removals on the single Search_Collection/streams doc are
+            # collected and written once (a doc may only be written once/batch).
+            search_field_deletes[snap.id] = firestore.DELETE_FIELD
             total_deleted += 1
-            print(f"   🗑️ Deleted: {vid}")
+            flush_batch()
 
-    # Rewrite the -All_Videos_Id index (keeps unverified IDs, drops only gone ones)
+# --- UPDATE VIEW COUNTS ---
+if fresh_views:
+    print(f"\n🔄 Updating view counts for {len(fresh_views)} videos...")
+    for vid, new_view_count in fresh_views.items():
+        if vid in gone_ids:
+            continue
+        target_url = f"https://www.youtube.com/watch?v={vid}"
+        for snap in url_to_docs.get(target_url, []):
+            batch.update(snap.reference, {"viewCount": new_view_count})
+            ops_in_batch += 1
+            total_updated += 1
+            flush_batch()
+
+flush_batch(force=True)
+
+# One combined write for all Search_Collection field removals.
+if search_field_deletes:
+    db.collection("Search_Collection").document("streams").set(
+        search_field_deletes, merge=True
+    )
+
+# Rewrite the -All_Videos_Id index (keeps unverified IDs, drops only gone ones).
+if gone_ids:
     remaining_ids = [vid for vid in video_ids if vid not in gone_ids]
     db.collection(COLLECTION_NAME).document(ALL_IDS_DOC).set({
         "video_id": remaining_ids,
@@ -140,26 +187,10 @@ if gone_ids:
     }, merge=True)
     print(f"💾 Updated {ALL_IDS_DOC} index: {len(remaining_ids)} videos remain")
 
-# ---------------- UPDATE VIEW COUNTS ----------------
-total_updated = 0
-
-if fresh_views:
-    print(f"\n🔄 Updating view counts for {len(fresh_views)} videos...")
-    for vid, new_view_count in fresh_views.items():
-        target_url = f"https://www.youtube.com/watch?v={vid}"
-        docs = db.collection(COLLECTION_NAME).where(
-            filter=FieldFilter("url", "==", target_url)
-        ).stream()
-        for doc_item in docs:
-            doc_item.reference.update({"viewCount": new_view_count})
-            total_updated += 1
-        time.sleep(0.01)  # tiny throttle for Firebase writes
-    print(f"✅ Updated view counts for {total_updated} videos")
-
 # ---------------- SUMMARY ----------------
 print("\n================ SUMMARY ================")
 print(f"📦 Total videos checked     : {len(video_ids)}")
 print(f"🗑️  Deleted/private removed  : {total_deleted}")
 print(f"🔄 View counts updated      : {total_updated}")
-print(f"📊 Videos remaining in DB   : {len(video_ids) - total_deleted}")
+print(f"📊 Videos remaining in DB   : {len(video_ids) - len(gone_ids)}")
 print("========================================")
