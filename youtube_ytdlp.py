@@ -179,6 +179,59 @@ def extract_videos(video_ids):
     return details
 
 
+# Error phrases that mean a video is PERMANENTLY gone (deleted / private / blocked).
+# Anything else (timeouts, "Unable to download", HTTP 5xx) is treated as transient
+# so we never delete a still-good video because of a temporary network problem.
+_GONE_ERROR_PHRASES = (
+    "video unavailable",
+    "this video is private",
+    "private video",
+    "video has been removed",
+    "removed by the uploader",
+    "account associated with this video has been terminated",
+    "video is no longer available",
+    "this video is not available",
+    "who has blocked it",
+    "video is unavailable",
+    "content isn't available",
+)
+
+
+def is_video_gone(video_id):
+    """Verify (one clean yt-dlp call) whether a video is PERMANENTLY gone.
+
+    Returns True only when yt-dlp reports a definitive deleted/private/blocked
+    error. Transient failures (network/timeout) return False so callers never
+    delete a video that might still exist.
+    """
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    cmd = base_args() + ["--simulate", "--no-warnings", "--skip-download", url]
+    code, out, err = _run(cmd)
+    if code == 0:
+        return False  # extracted fine → definitely still there
+    text = (err + " " + out).lower()
+    return any(phrase in text for phrase in _GONE_ERROR_PHRASES)
+
+
+def confirm_gone(video_ids):
+    """Re-verify a set of suspected-gone ids in parallel; return those confirmed gone."""
+    ids = [v for v in dict.fromkeys(video_ids) if v]
+    if not ids:
+        return set()
+    gone = set()
+    workers = max(1, min(EXTRACT_WORKERS, len(ids)))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_map = {executor.submit(is_video_gone, vid): vid for vid in ids}
+        for future in as_completed(future_map):
+            vid = future_map[future]
+            try:
+                if future.result():
+                    gone.add(vid)
+            except Exception as e:
+                print(f"⚠️ Could not verify {vid}: {e}")
+    return gone
+
+
 # ---------------- FIELD HELPERS ----------------
 def channel_name(info):
     return info.get("channel") or info.get("uploader") or ""
