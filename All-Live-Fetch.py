@@ -38,7 +38,6 @@ CHANNEL_IDS = [
     "UC1qqv4R3RhT5OVMy-E_PciQ",
     "UCJKGP1t3yZMrh1Yc4Afs5rQ",
     "UC7Uo3euG3IA0yBlQyIXDcUA",
-    "UCsCY7yimnS3FCIo-SCXD-Zg",
     "UCmX4QOJHAu2vni7nuGmNT5A",
     "UCxghhy9WjHpiO2jixD3t6WQ",
     "UCT3k8uyu8K8r6155o-9shdg",
