@@ -82,8 +82,8 @@ $youtubeUrl = "https://www.youtube.com/channel/$selectedChannelId/live"
 Write-Host "Opening random Bhakti channel in Firefox: $youtubeUrl"
 Start-Process -FilePath $FirefoxExecutable -ArgumentList @($youtubeUrl)
 
-Write-Host 'Waiting 1 minute before continuing...'
-Start-Sleep -Seconds 60
+Write-Host 'Waiting 15s before continuing...'
+Start-Sleep -Seconds 15
 
 Save-Screenshot -Name '01-youtube-sign-in-check.jpg'
 
