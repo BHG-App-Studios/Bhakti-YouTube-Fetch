@@ -76,6 +76,8 @@ jobs:
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: "1"
         run: |
           python All-Videos-Fetch.py
 
@@ -84,5 +86,7 @@ jobs:
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: "1"
         run: |
           python All-Live-Fetch.py
