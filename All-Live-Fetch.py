@@ -295,7 +295,10 @@ else:
             "title": title,
             "titleLowercase": title.lower(),
             "url": f"https://www.youtube.com/watch?v={vid}",
-            "viewCount": view_count(info, live=True),
+            # Store TOTAL views (not concurrent viewers) so this value stays
+            # consistent with Update-Live-Videos.py, which refreshes it from the
+            # Data API's statistics.viewCount for still-live streams.
+            "viewCount": view_count(info),
             "timestamp": str(int(time.time() * 1000)),
         }
 

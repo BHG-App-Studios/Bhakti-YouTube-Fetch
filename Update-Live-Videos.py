@@ -53,15 +53,18 @@ if not video_ids:
 print(f"📦 Found {len(video_ids)} live streams to check")
 
 # ---------------- QUERY YOUTUBE DATA API ----------------
-print("\n📡 Fetching current concurrent viewers via YouTube Data API...")
+print("\n📡 Checking real live status & total views via YouTube Data API...")
 
 API_URL = "https://www.googleapis.com/youtube/v3/videos"
-fresh_views = {}     # id -> current concurrent viewers (only for streams STILL live)
+fresh_views = {}      # id -> total viewCount (only for streams the API says are LIVE)
 verified_ids = set()  # IDs that were part of a SUCCESSFUL API call
+not_live_ids = set()  # IDs the API confirmed are NOT live right now
 
 for chunk in chunk_list(video_ids, API_CHUNK_SIZE):
     params = {
-        "part": "liveStreamingDetails",
+        # videos.list costs 1 unit per call regardless of parts; snippet gives the
+        # authoritative liveBroadcastContent, statistics gives total viewCount.
+        "part": "snippet,statistics",
         "id": ",".join(chunk),
         "key": YOUTUBE_API_KEY,
         "maxResults": API_CHUNK_SIZE,
@@ -80,13 +83,17 @@ for chunk in chunk_list(video_ids, API_CHUNK_SIZE):
     verified_ids.update(chunk)
     for item in data.get("items", []):
         vid = item["id"]
-        details = item.get("liveStreamingDetails") or {}
-        cv = details.get("concurrentViewers")
-        # concurrentViewers is present ONLY while the stream is live. Missing =>
-        # ended / upcoming / not live => skip (leave it for All-Live-Fetch.py).
-        if cv is not None:
+        snippet = item.get("snippet") or {}
+        # Authoritative liveness signal: "live" | "upcoming" | "none".
+        # We update ONLY genuinely-live videos; concurrentViewers is NOT used.
+        if snippet.get("liveBroadcastContent") != "live":
+            not_live_ids.add(vid)
+            continue
+        stats = item.get("statistics") or {}
+        vc = stats.get("viewCount")
+        if vc is not None:
             try:
-                fresh_views[vid] = int(cv)
+                fresh_views[vid] = int(vc)
             except (TypeError, ValueError):
                 pass
 
@@ -94,9 +101,8 @@ if not verified_ids:
     print("❌ No API batch succeeded (bad key/quota?); no database changes made.")
     sys.exit(1)
 
-print(f"🔴 Still live (updatable)   : {len(fresh_views)}")
-skipped_not_live = len(verified_ids) - len(fresh_views)
-print(f"⏭️  Not live now (skipped)   : {skipped_not_live}")
+print(f"🔴 Confirmed live (updatable): {len(fresh_views)}")
+print(f"⏭️  Not live now (skipped)    : {len(not_live_ids)}")
 
 if not fresh_views:
     print("✅ No currently-live streams to update.")
@@ -151,6 +157,7 @@ flush_batch(force=True)
 # ---------------- SUMMARY ----------------
 print("\n================ SUMMARY ================")
 print(f"📦 Live streams checked     : {len(video_ids)}")
-print(f"🔴 Still live               : {len(fresh_views)}")
+print(f"🔴 Confirmed live           : {len(fresh_views)}")
+print(f"⏭️  Not live now (skipped)   : {len(not_live_ids)}")
 print(f"🔄 View counts updated      : {total_updated}")
 print("========================================")
