@@ -9,7 +9,7 @@ permissions:
 jobs:
   prepare-youtube-tools:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 240
 
     steps:
       - name: Check out repository
