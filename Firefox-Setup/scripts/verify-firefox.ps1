@@ -54,9 +54,33 @@ function Save-Screenshot {
     Write-Host "Saved screenshot: $outputPath"
 }
 
-# Open YouTube in Firefox to verify the Google session is alive
-Write-Host "Opening YouTube in Firefox to verify Google sign-in..."
-Start-Process -FilePath $FirefoxExecutable -ArgumentList @('https://www.youtube.com/channel/UCYn6UEtQ771a_OWSiNBoG8w/live')
+# Open a random Bhakti channel in Firefox to verify the Google session is alive.
+$channelIds = @(
+    'UCiMASbpDUjNvy5CJAmfekOw'
+    'UCLIryeFjYeiEtpqNETz_Ydg'
+    'UCAJcxMaiGu-cjzklR-63ojw'
+    'UCuFjc50BSjqeW7AOVmSR7dQ'
+    'UCL0cLclH8j_qGjQhnn_5skg'
+    'UC31Y8qVbsrRMUt1hbIfvCaw'
+    'UC5zCR2OSUvo1g49rkAL8PoQ'
+    'UCBAvMHZO3BIfMMhOK9LMOYQ'
+    'UC82-0zBQho_hyV10fFAAeQA'
+    'UCpSTRmTFY7pCzdeHJwAiAEg'
+    'UC1OSbPhj52oW6VM6Odq4uzA'
+    'UCT1egsvA08YcdMLiEu1DTRg'
+    'UC1qqv4R3RhT5OVMy-E_PciQ'
+    'UCJKGP1t3yZMrh1Yc4Afs5rQ'
+    'UC7Uo3euG3IA0yBlQyIXDcUA'
+    'UCsCY7yimnS3FCIo-SCXD-Zg'
+    'UCmX4QOJHAu2vni7nuGmNT5A'
+    'UCxghhy9WjHpiO2jixD3t6WQ'
+    'UCT3k8uyu8K8r6155o-9shdg'
+)
+
+$selectedChannelId = Get-Random -InputObject $channelIds
+$youtubeUrl = "https://www.youtube.com/channel/$selectedChannelId/live"
+Write-Host "Opening random Bhakti channel in Firefox: $youtubeUrl"
+Start-Process -FilePath $FirefoxExecutable -ArgumentList @($youtubeUrl)
 
 Write-Host 'Waiting 5 seconds for YouTube to load...'
 Start-Sleep -Seconds 5
