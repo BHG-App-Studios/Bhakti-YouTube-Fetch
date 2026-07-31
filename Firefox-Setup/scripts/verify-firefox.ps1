@@ -143,8 +143,8 @@ Write-Host "Clicking the center of Firefox at ($centerX, $centerY) to start YouT
 [WindowInput]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero) # MOUSEEVENTF_LEFTUP
 [System.Windows.Forms.Cursor]::Position = $originalCursorPosition
 
-Write-Host 'Waiting 30 seconds before continuing...'
-Start-Sleep -Seconds 30
+Write-Host 'Waiting 2 minutes before continuing...'
+Start-Sleep -Seconds 120
 
 Save-Screenshot -Name '01-youtube-sign-in-check.jpg'
 
