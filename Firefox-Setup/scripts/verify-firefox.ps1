@@ -128,6 +128,7 @@ if (-not $windowShell.AppActivate($firefoxWindow.Id)) {
 }
 
 Start-Sleep -Milliseconds 500
+$windowBounds = [WindowInput+RECT]::new()
 if (-not [WindowInput]::GetWindowRect($firefoxWindow.MainWindowHandle, [ref]$windowBounds)) {
     throw 'Could not get the Firefox window bounds to start YouTube playback.'
 }
