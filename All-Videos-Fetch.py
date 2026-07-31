@@ -44,7 +44,7 @@ EXCLUDED_KEYWORDS = [
 ]
 
 # Database Configurations
-COLLECTION_NAME = "Listen_Bhajan_Videos_New"  # Renamed for Bhakti app context
+COLLECTION_NAME = "Listen_Kirtans_Videos_New"  # Renamed for Bhakti app context
 ALL_IDS_DOC = "-All_Videos_Id"
 MIN_DURATION_SECONDS = 180  # ⏱️ 3 minutes
 SCAN_LIMIT = 50             # 🔢 latest videos to scan per channel (yt-dlp --playlist-end)
