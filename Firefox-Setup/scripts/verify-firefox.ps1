@@ -19,34 +19,6 @@ New-Item -ItemType Directory -Path $ScreenshotDirectory -Force | Out-Null
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-if (-not ('WindowInput' -as [type])) {
-    Add-Type @'
-using System;
-using System.Runtime.InteropServices;
-
-public static class WindowInput
-{
-    [StructLayout(LayoutKind.Sequential)]
-    public struct RECT
-    {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
-    }
-
-    [DllImport("user32.dll")]
-    public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
-
-    [DllImport("user32.dll")]
-    public static extern bool SetCursorPos(int x, int y);
-
-    [DllImport("user32.dll")]
-    public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
-}
-'@
-}
-
 function Save-Screenshot {
     param(
         [Parameter(Mandatory = $true)]
@@ -110,41 +82,8 @@ $youtubeUrl = "https://www.youtube.com/channel/$selectedChannelId/live"
 Write-Host "Opening random Bhakti channel in Firefox: $youtubeUrl"
 Start-Process -FilePath $FirefoxExecutable -ArgumentList @($youtubeUrl)
 
-Write-Host 'Waiting 15 seconds for the YouTube player to load...'
-Start-Sleep -Seconds 15
-
-$firefoxWindow = Get-Process -Name firefox -ErrorAction SilentlyContinue |
-    Where-Object { $_.MainWindowHandle -ne 0 } |
-    Sort-Object StartTime -Descending |
-    Select-Object -First 1
-
-if ($null -eq $firefoxWindow) {
-    throw 'Could not find a visible Firefox window to start YouTube playback.'
-}
-
-$windowShell = New-Object -ComObject WScript.Shell
-if (-not $windowShell.AppActivate($firefoxWindow.Id)) {
-    throw 'Could not activate the Firefox window to start YouTube playback.'
-}
-
-Start-Sleep -Milliseconds 500
-$windowBounds = [WindowInput+RECT]::new()
-if (-not [WindowInput]::GetWindowRect($firefoxWindow.MainWindowHandle, [ref]$windowBounds)) {
-    throw 'Could not get the Firefox window bounds to start YouTube playback.'
-}
-
-$centerX = [int](($windowBounds.Left + $windowBounds.Right) / 2)
-$centerY = [int](($windowBounds.Top + $windowBounds.Bottom) / 2)
-$originalCursorPosition = [System.Windows.Forms.Cursor]::Position
-
-Write-Host "Clicking the center of Firefox at ($centerX, $centerY) to start YouTube playback..."
-[WindowInput]::SetCursorPos($centerX, $centerY) | Out-Null
-[WindowInput]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero) # MOUSEEVENTF_LEFTDOWN
-[WindowInput]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero) # MOUSEEVENTF_LEFTUP
-[System.Windows.Forms.Cursor]::Position = $originalCursorPosition
-
-Write-Host 'Waiting 2 minutes before continuing...'
-Start-Sleep -Seconds 120
+Write-Host 'Waiting 1 minute before continuing...'
+Start-Sleep -Seconds 60
 
 Save-Screenshot -Name '01-youtube-sign-in-check.jpg'
 
