@@ -16,6 +16,7 @@ not blocked with "Sign in to confirm you're not a bot".
 import json
 import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 import requests
@@ -25,6 +26,11 @@ from bs4 import BeautifulSoup
 YTDLP_BIN = os.environ.get("YTDLP_BIN", "yt-dlp")
 # Empty string disables cookies (e.g. for local testing without Firefox).
 COOKIES_FROM_BROWSER = os.environ.get("YTDLP_COOKIES_FROM_BROWSER", "firefox")
+
+# Parallel extraction tuning (overridable via env).
+# Videos are extracted in parallel yt-dlp processes since the work is network-bound.
+EXTRACT_WORKERS = int(os.environ.get("YTDLP_EXTRACT_WORKERS", "8"))
+EXTRACT_BATCH_SIZE = int(os.environ.get("YTDLP_EXTRACT_BATCH_SIZE", "10"))
 
 # Channel logo cache shared across a single run.
 _CHANNEL_LOGO_CACHE = {}
@@ -90,30 +96,42 @@ def list_channel_entries(channel_id, tab="videos", limit=50):
     return videos
 
 
-# ---------------- DETAILS (replaces YouTube Data API) ----------------
-def extract_videos(video_ids):
-    """Full-extract many videos in one yt-dlp process (newline-delimited JSON).
-
-    Returns {video_id: info_json}. Missing/failed videos are simply absent.
+def list_channels(channel_ids, tab="videos", limit=50):
+    """List entries for many channels in parallel. Returns a flat list of
+    {"video_id", "title"}. Order is not guaranteed (dedup/sorting happen later).
     """
-    ids = [v for v in dict.fromkeys(video_ids) if v]  # de-dupe, keep order
-    if not ids:
-        return {}
+    results = []
+    workers = max(1, min(EXTRACT_WORKERS, len(channel_ids)))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_map = {
+            executor.submit(list_channel_entries, cid, tab, limit): cid
+            for cid in channel_ids
+        }
+        for future in as_completed(future_map):
+            try:
+                results.extend(future.result())
+            except Exception as e:
+                print(f"⚠️ Listing failed for {future_map[future]}: {e}")
+    return results
 
-    urls = [f"https://www.youtube.com/watch?v={v}" for v in ids]
+
+# ---------------- DETAILS (replaces YouTube Data API) ----------------
+def _extract_batch(urls):
+    """Extract one batch of video URLs in a single yt-dlp process.
+
+    Returns {video_id: info_json} for whatever parsed successfully.
+    """
     cmd = base_args() + [
         "-j",                          # one JSON object per line
         "--no-download",
         "--ignore-errors",             # skip a bad video, keep going
         "--ignore-no-formats-error",   # ended live streams have no formats: still emit metadata (live_status)
-        "--sleep-requests", "1",
         "--extractor-retries", "3",
     ] + urls
 
     code, out, err = _run(cmd)
-    # returncode may be non-zero if some videos failed; parse whatever we got.
     if not out.strip() and err.strip():
-        print(f"⚠️ yt-dlp extraction produced no output: {err.strip()[:300]}")
+        print(f"⚠️ yt-dlp batch produced no output: {err.strip()[:200]}")
 
     details = {}
     for line in out.splitlines():
@@ -127,6 +145,37 @@ def extract_videos(video_ids):
         vid = info.get("id")
         if vid:
             details[vid] = info
+    return details
+
+
+def extract_videos(video_ids):
+    """Full-extract many videos, running batches in parallel yt-dlp processes.
+
+    Extraction is network-bound, so several yt-dlp processes run concurrently
+    (EXTRACT_WORKERS), each handling a small batch (EXTRACT_BATCH_SIZE). This is
+    dramatically faster than one long sequential process for hundreds of videos.
+
+    Returns {video_id: info_json}. Missing/failed videos are simply absent.
+    """
+    ids = [v for v in dict.fromkeys(video_ids) if v]  # de-dupe, keep order
+    if not ids:
+        return {}
+
+    urls = [f"https://www.youtube.com/watch?v={v}" for v in ids]
+    batches = [
+        urls[i:i + EXTRACT_BATCH_SIZE]
+        for i in range(0, len(urls), EXTRACT_BATCH_SIZE)
+    ]
+
+    details = {}
+    workers = max(1, min(EXTRACT_WORKERS, len(batches)))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(_extract_batch, batch) for batch in batches]
+        for future in as_completed(futures):
+            try:
+                details.update(future.result())
+            except Exception as e:
+                print(f"⚠️ yt-dlp batch failed: {e}")
     return details
 
 

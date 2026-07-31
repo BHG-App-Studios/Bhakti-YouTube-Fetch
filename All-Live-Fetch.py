@@ -9,7 +9,7 @@ import time
 import re
 
 from youtube_ytdlp import (
-    list_channel_entries,
+    list_channels,
     extract_videos,
     channel_name,
     live_status,
@@ -159,12 +159,9 @@ new_ids = []
 
 # STEP 1: Gather recent streams per channel via yt-dlp (the /streams tab).
 print("\n---------------- STARTING yt-dlp STREAMS SCAN ----------------")
-scanned_videos = []
-for channel_id in CHANNEL_IDS:
-    print(f"🔍 Scanning channel: {channel_id}")
-    videos = list_channel_entries(channel_id, tab="streams", limit=LIVE_SCAN_LIMIT)
-    total_fetched += len(videos)
-    scanned_videos.extend(videos)
+print(f"🔍 Scanning {len(CHANNEL_IDS)} channels in parallel...")
+scanned_videos = list_channels(CHANNEL_IDS, tab="streams", limit=LIVE_SCAN_LIMIT)
+total_fetched = len(scanned_videos)
 
 # STEP 2: Exclusions (NO extraction cost yet). The real live check is done later
 # via yt-dlp (live_status == "is_live"), so no title-based "live" word filter here.

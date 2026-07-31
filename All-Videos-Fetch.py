@@ -9,7 +9,7 @@ import re
 import random
 
 from youtube_ytdlp import (
-    list_channel_entries,
+    list_channels,
     extract_videos,
     channel_name,
     channel_id_of,
@@ -86,12 +86,9 @@ new_ids = []
 
 # 1. Gather latest videos per channel via yt-dlp (the /videos tab excludes Shorts).
 print("\n---------------- STARTING yt-dlp CHANNEL SCAN ----------------")
-scanned_videos = []
-for channel_id in CHANNEL_IDS:
-    print(f"🔍 Scanning channel: {channel_id}")
-    videos = list_channel_entries(channel_id, tab="videos", limit=SCAN_LIMIT)
-    total_fetched += len(videos)
-    scanned_videos.extend(videos)
+print(f"🔍 Scanning {len(CHANNEL_IDS)} channels in parallel...")
+scanned_videos = list_channels(CHANNEL_IDS, tab="videos", limit=SCAN_LIMIT)
+total_fetched = len(scanned_videos)
 
 # 2. Local Filters (ID & Keyword Exclusions - NO extraction cost)
 print("\n🧹 Filtering out existing DB videos and bad keywords locally...")
