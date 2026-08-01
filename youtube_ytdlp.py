@@ -1,17 +1,4 @@
 #!/usr/bin/env python3
-"""Shared yt-dlp helpers for the Bhakti fetch scripts.
-
-Replaces the old RSS feed (channel listing) and the YouTube Data API
-(video details / live status) with yt-dlp, using the same Firefox-cookie
-anti-bot technique proven in Palki-Sahib-Video-Creator/Scripts/01_download_stream.py:
-
-    yt-dlp --ignore-config --cookies-from-browser firefox \
-           --js-runtimes node --remote-components ejs:github ... <URL>
-
-Node.js + the ejs:github remote component solve YouTube's JS (nsig) challenge,
-and the restored Firefox profile supplies a signed-in session so requests are
-not blocked with "Sign in to confirm you're not a bot".
-"""
 
 import json
 import os
