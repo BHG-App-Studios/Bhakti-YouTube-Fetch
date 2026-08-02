@@ -23,18 +23,30 @@ from youtube_ytdlp import (
 
 # ---------------- CONFIG ----------------
 CHANNEL_IDS = [
+    "UCiMASbpDUjNvy5CJAmfekOw",
+    "UCLIryeFjYeiEtpqNETz_Ydg",
+    "UCAJcxMaiGu-cjzklR-63ojw",
+    "UCuFjc50BSjqeW7AOVmSR7dQ",
+    "UCL0cLclH8j_qGjQhnn_5skg",
+    "UC31Y8qVbsrRMUt1hbIfvCaw",
+    "UC5zCR2OSUvo1g49rkAL8PoQ",
 
-
+    # mandirs
     "UCBAvMHZO3BIfMMhOK9LMOYQ",
     "UC82-0zBQho_hyV10fFAAeQA",
+    "UCpSTRmTFY7pCzdeHJwAiAEg",
+    "UC1OSbPhj52oW6VM6Odq4uzA",
     "UCT1egsvA08YcdMLiEu1DTRg",
+    "UC1qqv4R3RhT5OVMy-E_PciQ",
     "UCJKGP1t3yZMrh1Yc4Afs5rQ",
+    "UC7Uo3euG3IA0yBlQyIXDcUA",
+    "UCmX4QOJHAu2vni7nuGmNT5A",
+    "UCxghhy9WjHpiO2jixD3t6WQ",
+    "UCT3k8uyu8K8r6155o-9shdg",
     "UCl1QhFznVxYCE0a9uLnmcrg",
     "UC3_zrRgShXr_i3Tgdcr0QCg",
     "UCGo0i_2CsHRrMnEouIlHfRQ",
     "UC5fbdgYVnVwnEcM2KnaeZ0g",
-    
-
 ]
 
 # 🚫 Keywords to exclude (Case Insensitive, Whole Words Only)
@@ -166,7 +178,7 @@ total_deleted = 0
 total_fetched = len(live_now)
 total_skipped_existing = 0
 total_skipped_keywords = 0
-total_skipped_duplicate_titles = 0
+total_skipped_same_channel = 0
 total_inserted = 0
 
 new_ids = []
@@ -253,21 +265,19 @@ for vid, info in live_now.items():
     info["title"] = title
     candidates.append((vid, info))
 
-# Title deduplication + "keep the highest-view stream" selection.
+# One live stream per CHANNEL selection.
 #
-# A candidate must be skipped when its title matches EITHER a stream already stored
-# in the DB OR another NEW candidate in this run — same title (different id) means
-# it is effectively the same broadcast, and 24/7 channels emit many such copies at
-# once, which is what previously accumulated duplicate titles over successive runs.
+# We insert AT MOST one live stream per channel, no matter how many the channel is
+# broadcasting at once (24/7 channels often run several parallel streams).
 #
-#   1. Titles already live AND stored in the DB are reserved first. They come for
-#      FREE from this same scan (any stored stream still live reappears in live_now),
-#      so NO extra Firebase read is needed. We never insert a same-title copy of one
-#      that is already in the DB, and we never churn/replace the stored one.
-#   2. Among the remaining NEW candidates that share a title, we keep exactly ONE —
+#   1. Channels that ALREADY have a stored stream still live are reserved first.
+#      They come for FREE from this same scan (any stored stream still live reappears
+#      in live_now), so NO extra Firebase read is needed. We never add a second stream
+#      for such a channel, and we never churn/replace the stored one.
+#   2. Among the remaining NEW candidates from the same channel, we keep exactly ONE —
 #      the stream with the MOST views (missing view data counts as 0 / lowest). Ties
 #      break deterministically by video id, so the same stream wins on every run.
-print("👯 De-duplicating titles (keeping the highest-view stream per title)...")
+print("📺 Selecting one live stream per channel (keeping the highest-view stream)...")
 
 
 def _views(info):
@@ -278,36 +288,42 @@ def _views(info):
         return 0
 
 
-seen_titles = set()
+def _channel_key(info):
+    """Stable per-channel identifier used to enforce one stream per channel."""
+    return info.get("channel_id") or info.get("uploader_id") or ""
+
+
+reserved_channels = set()
 for vid, info in live_now.items():
     if vid in existing_ids:
-        t = (info.get("title") or "").strip()
-        if t:
-            seen_titles.add(t)  # reserve titles already live & stored in the DB
+        ch = _channel_key(info)
+        if ch:
+            reserved_channels.add(ch)  # channel already has a stored, still-live stream
 
-best_by_title = {}  # title -> (vid, info) winner among NEW candidates
+best_by_channel = {}  # channel -> (vid, info) winner among NEW candidates
 for vid, info in candidates:
+    ch = _channel_key(info)
     title = info["title"]
 
-    # Same title as a stream already stored & still live → never insert a copy.
-    if title in seen_titles:
-        print(f"👯 Skipped Duplicate Title (already in DB): {title[:40]}...")
-        total_skipped_duplicate_titles += 1
+    # Channel already shows a stored, still-live stream → don't add a second one.
+    if ch in reserved_channels:
+        print(f"📺 Skipped (channel already live in DB): {title[:40]}...")
+        total_skipped_same_channel += 1
         continue
 
-    current = best_by_title.get(title)
+    current = best_by_channel.get(ch)
     if current is None:
-        best_by_title[title] = (vid, info)
+        best_by_channel[ch] = (vid, info)
         continue
 
-    # Two NEW candidates share this title: keep the higher-view one (id breaks ties).
+    # Two NEW candidates on the same channel: keep the higher-view one (id breaks ties).
     cur_vid, cur_info = current
     if (_views(info), vid) > (_views(cur_info), cur_vid):
-        best_by_title[title] = (vid, info)
-    print(f"👯 Duplicate Title (kept higher-view stream): {title[:40]}...")
-    total_skipped_duplicate_titles += 1
+        best_by_channel[ch] = (vid, info)
+    print(f"📺 Duplicate on channel (kept higher-view stream): {title[:40]}...")
+    total_skipped_same_channel += 1
 
-unique_candidates = list(best_by_title.values())
+unique_candidates = list(best_by_channel.values())
 
 if not unique_candidates:
     print("✅ No new live streams to insert.")
@@ -365,6 +381,6 @@ print(f"🗑️  Stale Streams Deleted   : {total_deleted}")
 print(f"📥 Live Found (yt-dlp scan) : {total_fetched}")
 print(f"⏭️  Skipped (Already in DB) : {total_skipped_existing}")
 print(f"🛑 Skipped (Bad Keywords)   : {total_skipped_keywords}")
-print(f"👯 Skipped (Duplicate Title): {total_skipped_duplicate_titles}")
+print(f"📺 Skipped (Same Channel)   : {total_skipped_same_channel}")
 print(f"➕ Inserted to Bhakti App   : {total_inserted} (Total Live: {len(existing_ids)})")
 print("========================================")
