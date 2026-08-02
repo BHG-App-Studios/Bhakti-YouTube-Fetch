@@ -30,6 +30,7 @@ CHANNEL_IDS = [
     "UCL0cLclH8j_qGjQhnn_5skg",
     "UC31Y8qVbsrRMUt1hbIfvCaw",
     "UC5zCR2OSUvo1g49rkAL8PoQ",
+    "UCMGxP9tdDh7yOcd-H8pbfqQ",
 
     # mandirs
     "UCBAvMHZO3BIfMMhOK9LMOYQ",
@@ -52,7 +53,7 @@ CHANNEL_IDS = [
 # 🚫 Keywords to exclude (Case Insensitive, Whole Words Only)
 # Kept exactly as your previous script per your instructions
 EXCLUDED_KEYWORDS = [
-     "antim ardaas", "bhog", "bhogg",
+     "antim ardaas", "bhog", "bhogg", "song", "remix",
 ]
 
 # Database Configurations (Updated to target live streams)
