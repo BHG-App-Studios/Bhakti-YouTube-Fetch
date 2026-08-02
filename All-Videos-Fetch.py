@@ -24,10 +24,27 @@ from youtube_ytdlp import (
 
 # ---------------- CONFIG ----------------
 CHANNEL_IDS = [
+
+
     "UCcGjF-pB4bV5vgaqahJ1qpg",
     "UCaayLD9i5x4MmIoVZxXSv_g",
     "UC6vQRTCxutg6fJLUGkDKynQ",
     "UCaF3MVnBYNnjAKF16k3mUjw",
+    "UCBAvMHZO3BIfMMhOK9LMOYQ",
+    "UCpSTRmTFY7pCzdeHJwAiAEg",
+    "UC7Uo3euG3IA0yBlQyIXDcUA",
+    "UCmX4QOJHAu2vni7nuGmNT5A",
+    "UCxghhy9WjHpiO2jixD3t6WQ",
+    "UCT3k8uyu8K8r6155o-9shdg",
+    "UC5zCR2OSUvo1g49rkAL8PoQ",
+    "UC31Y8qVbsrRMUt1hbIfvCaw",
+    "UCL0cLclH8j_qGjQhnn_5skg",
+    "UCuFjc50BSjqeW7AOVmSR7dQ",
+    "UCLIryeFjYeiEtpqNETz_Ydg",
+    "UCMGxP9tdDh7yOcd-H8pbfqQ",
+    "UC5fbdgYVnVwnEcM2KnaeZ0g",
+
+
 ]
 
 # 🚫 Keywords to exclude (Case Insensitive, Whole Words Only)
