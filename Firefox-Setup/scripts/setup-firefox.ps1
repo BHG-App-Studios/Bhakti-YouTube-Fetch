@@ -47,14 +47,14 @@ if (Test-Path -LiteralPath $mozillaDirectory) {
     Remove-Item -LiteralPath $mozillaDirectory -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# --- Step 2: Fresh Install Firefox 153.0.1 ---
+# --- Step 2: Fresh Install Firefox 157.0 ---
 
-Write-Host 'Installing Firefox 153.0.1 via winget...'
+Write-Host 'Installing Firefox 157.0 via winget...'
 $wingetArguments = @(
     'install'
     '-e'
     '--id', 'Mozilla.Firefox'
-    '-v', '153.0.1'
+    '-v', '157.0'
     '--silent'
     '--accept-package-agreements'
     '--accept-source-agreements'
